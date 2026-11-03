@@ -1,0 +1,226 @@
+import { useState, useEffect } from 'react'
+import { ArrowLeft, Plus, X, Save, CheckCircle, AlertCircle } from 'lucide-react'
+import furnitureService from '../services/furnitureService'
+
+export default function EditFurniturePage({ furniture, furnitureId, onBack, onSuccess }) {
+  const targetId = furnitureId || furniture?.id
+
+  const [formData, setFormData] = useState({
+    name: furniture?.name || '',
+    type: furniture?.type || 'Kursi',
+    caliber: furniture?.caliber || 'Kayu Jati Solid',
+    difficulty: furniture?.difficulty || 'sedang',
+    price: furniture?.price ?? 3500000,
+    description: furniture?.description || '',
+    image_url: furniture?.image_url || '/furniture/chair.jpg',
+  })
+
+  const [specs, setSpecs] = useState(
+    furniture?.ingredients?.length > 0
+      ? furniture.ingredients
+      : [{ name: 'Dimensi', quantity: 'Standar' }],
+  )
+  const [steps, setSteps] = useState(
+    furniture?.steps?.length > 0
+      ? furniture.steps.map((s) => (typeof s === 'string' ? s : s.instruction || ''))
+      : ['Bersihkan menggunakan kain kering lembut.'],
+  )
+
+  const [updating, setUpdating] = useState(false)
+  const [error, setError] = useState('')
+  const [successMsg, setSuccessMsg] = useState('')
+
+  useEffect(() => {
+    if (!furniture && targetId) {
+      furnitureService.getFurnitureById(targetId).then((res) => {
+        if (res.success && res.data) {
+          const d = res.data
+          setFormData({
+            name: d.name,
+            type: d.type,
+            caliber: d.caliber,
+            difficulty: d.difficulty || 'sedang',
+            price: d.price,
+            description: d.description,
+            image_url: d.image_url,
+          })
+          if (d.ingredients?.length) setSpecs(d.ingredients)
+          if (d.steps?.length) setSteps(d.steps)
+        }
+      })
+    }
+  }, [furniture, targetId])
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (!formData.name.trim()) {
+      setError('Nama produk wajib diisi.')
+      return
+    }
+    try {
+      setUpdating(true)
+      const res = await furnitureService.updateFurniture(targetId, {
+        ...formData,
+        price: Number(formData.price) || 0,
+        ingredients: specs.filter((s) => s.name.trim()),
+        steps: steps.filter((s) => s.trim()),
+      })
+      if (res.success) {
+        setSuccessMsg('Perubahan berhasil disimpan!')
+        if (onSuccess) onSuccess(res.data)
+        else if (onBack) onBack()
+      }
+    } catch (err) {
+      setError(err.message || 'Gagal memperbarui produk.')
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  return (
+    <div className="form-page">
+      <div className="form-head">
+        <button type="button" className="detail-back" onClick={onBack}>
+          <ArrowLeft size={18} /> Batal &amp; Kembali
+        </button>
+      </div>
+
+      <div className="form-title-group">
+        <h1 className="display">Edit Data Furniture</h1>
+        <p className="lede">
+          Memperbarui produk ID: <code className="mono-badge">{targetId}</code>
+        </p>
+      </div>
+
+      {error && (
+        <div className="toast toast--error">
+          <AlertCircle size={18} /> {error}
+        </div>
+      )}
+      {successMsg && (
+        <div className="toast toast--success">
+          <CheckCircle size={18} /> {successMsg}
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="entry-form">
+        <div className="form-grid">
+          <div className="form-group">
+            <label className="form-label">Nama Produk Furniture *</label>
+            <input
+              type="text"
+              value={formData.name}
+              onChange={(e) => setFormData((p) => ({ ...p, name: e.target.value }))}
+              className="form-input"
+              required
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Kategori *</label>
+            <select
+              value={formData.type}
+              onChange={(e) => setFormData((p) => ({ ...p, type: e.target.value }))}
+              className="form-select"
+            >
+              <option value="Kursi">Kursi</option>
+              <option value="Meja">Meja</option>
+              <option value="Sofa">Sofa</option>
+              <option value="Kabinet">Kabinet</option>
+              <option value="Tempat Tidur">Tempat Tidur</option>
+              <option value="Meja Kerja">Meja Kerja</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="form-grid">
+          <div className="form-group">
+            <label className="form-label">Material Kayu &amp; Kain *</label>
+            <input
+              type="text"
+              value={formData.caliber}
+              onChange={(e) => setFormData((p) => ({ ...p, caliber: e.target.value }))}
+              className="form-input"
+              required
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Harga (IDR) *</label>
+            <input
+              type="number"
+              value={formData.price}
+              onChange={(e) => setFormData((p) => ({ ...p, price: e.target.value }))}
+              className="form-input"
+              required
+            />
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Deskripsi Produk</label>
+          <textarea
+            rows={3}
+            value={formData.description}
+            onChange={(e) => setFormData((p) => ({ ...p, description: e.target.value }))}
+            className="form-textarea"
+          />
+        </div>
+
+        <div className="form-fieldset">
+          <div className="fieldset-header">
+            <label className="form-label">Spesifikasi Dimensi &amp; Material</label>
+            <button
+              type="button"
+              className="btn btn--outline btn--sm"
+              onClick={() => setSpecs((p) => [...p, { name: '', quantity: '' }])}
+            >
+              <Plus size={14} /> Tambah Spesifikasi
+            </button>
+          </div>
+          <div className="multi-rows">
+            {specs.map((spec, i) => (
+              <div key={i} className="multi-row">
+                <input
+                  type="text"
+                  value={spec.name}
+                  onChange={(e) => {
+                    const copy = [...specs]
+                    copy[i] = { ...copy[i], name: e.target.value }
+                    setSpecs(copy)
+                  }}
+                  className="form-input"
+                />
+                <input
+                  type="text"
+                  value={spec.quantity}
+                  onChange={(e) => {
+                    const copy = [...specs]
+                    copy[i] = { ...copy[i], quantity: e.target.value }
+                    setSpecs(copy)
+                  }}
+                  className="form-input"
+                />
+                <button
+                  type="button"
+                  className="btn btn--danger-ghost"
+                  onClick={() => setSpecs((p) => p.filter((_, idx) => idx !== i))}
+                  disabled={specs.length <= 1}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="form-actions-bar">
+          <button type="button" className="btn btn--outline" onClick={onBack}>
+            Batal
+          </button>
+          <button type="submit" className="btn btn--primary" disabled={updating}>
+            <Save size={16} /> {updating ? 'Menyimpan…' : 'Simpan Perubahan'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}

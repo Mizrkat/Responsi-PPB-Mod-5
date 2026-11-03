@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+:root {
+  --paper: #FAF7F2;
+  --ink: #2C1E16;
+  --steel: #6E5D53;
+  --brass: #B87D4B;
+  --line: #E6DDD3;
+  --panel: #2C1E16;
+  --panel-text: #F5EBE0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--paper);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
