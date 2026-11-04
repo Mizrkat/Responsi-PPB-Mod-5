@@ -1,8 +1,12 @@
 import { apiClient, isSupabaseConfigured } from '../config/api'
+import { readSyncedIdMap, readLocalCatalog } from './furnitureService'
 
 const LOCAL_REVIEWS_KEY = 'kayu_ruang_reviews_v1'
+const PENDING_REVIEWS_KEY = 'kayu_ruang_pending_reviews_v1'
 const SOFT_DELETED_REVIEWS_KEY = 'kayu_ruang_soft_deleted_reviews_v1'
 const SOFT_DELETED_REVIEWS_ARCHIVE_KEY = 'kayu_ruang_soft_deleted_reviews_archive_v1'
+
+const STATIC_SEED_REVIEW_IDS = new Set(['rev-1', 'rev-2'])
 
 const DEFAULT_REVIEWS = {
   'furn-101': [
@@ -29,6 +33,35 @@ const DEFAULT_REVIEWS = {
       created_at: '2026-10-22T14:15:00.000Z',
     },
   ],
+}
+
+export const readPendingReviews = () => {
+  try {
+    const raw = localStorage.getItem(PENDING_REVIEWS_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+export const writePendingReviews = (list) => {
+  try {
+    localStorage.setItem(PENDING_REVIEWS_KEY, JSON.stringify(list))
+  } catch {
+    /* ignore */
+  }
+}
+
+export const addPendingReview = (reviewObj) => {
+  if (!reviewObj) return
+  const current = readPendingReviews().filter((r) => String(r.id) !== String(reviewObj.id))
+  writePendingReviews([{ ...reviewObj, pending_sync: true }, ...current])
+}
+
+export const removePendingReview = (reviewId) => {
+  const current = readPendingReviews().filter((r) => String(r.id) !== String(reviewId))
+  writePendingReviews(current)
 }
 
 const readSoftDeletedReviewIds = () => {
@@ -126,52 +159,248 @@ const writeLocalReviews = (mapObj) => {
   }
 }
 
+let isSyncingReviews = false
+
 class ReviewService {
   /**
-   * Mengambil daftar ulasan aktif & daftar ulasan yang di-soft-delete untuk 1 produk
+   * Helper internal untuk INSERT 1 ulasan ke tabel `public.reviews` di Supabase
+   */
+  async _insertReviewToSupabase(numericFurnitureId, reviewData) {
+    const payload = {
+      furniture_id: Number(numericFurnitureId),
+      user_id: reviewData.user_id || null,
+      user_name:
+        reviewData.user_name || reviewData.user_identifier || 'Pelanggan Kayu & Ruang',
+      rating: Number(reviewData.rating) || 5,
+      comment: reviewData.comment || '',
+      is_deleted: false,
+      deleted_at: null,
+    }
+    try {
+      const res = await apiClient.post('/rest/v1/reviews', payload, {
+        headers: { Prefer: 'return=representation' },
+      })
+      return Array.isArray(res) ? res[0] : res
+    } catch {
+      const fallbackPayload = {
+        furniture_id: Number(numericFurnitureId),
+        user_id: reviewData.user_id || null,
+        user_name:
+          reviewData.user_name || reviewData.user_identifier || 'Pelanggan Kayu & Ruang',
+        rating: Number(reviewData.rating) || 5,
+        comment: reviewData.comment || '',
+      }
+      const res2 = await apiClient.post('/rest/v1/reviews', fallbackPayload, {
+        headers: { Prefer: 'return=representation' },
+      })
+      return Array.isArray(res2) ? res2[0] : res2
+    }
+  }
+
+  /**
+   * Resolusi ID produk: jika ulasan dibuat pada item yang dulunya ber-ID lokal ('furn-...'),
+   * cari ID numerik aslinya di peta sinkronisasi atau cari berdasarkan nama produk di Supabase.
+   */
+  async _resolveNumericFurnitureId(rawFurnitureId, productNameHint = '') {
+    const idMap = readSyncedIdMap()
+    const mapped = idMap[String(rawFurnitureId)]
+    if (mapped && !String(mapped).startsWith('furn-') && !Number.isNaN(Number(mapped))) {
+      return Number(mapped)
+    }
+    if (!String(rawFurnitureId).startsWith('furn-') && !Number.isNaN(Number(rawFurnitureId))) {
+      return Number(rawFurnitureId)
+    }
+
+    // Cari nama produk dari katalog lokal lalu cocokkan ke Supabase
+    const localCatalog = readLocalCatalog()
+    const matchLocal = localCatalog.find((f) => String(f.id) === String(rawFurnitureId))
+    const targetName = productNameHint || matchLocal?.name || ''
+    if (targetName && isSupabaseConfigured() && navigator.onLine) {
+      try {
+        const rows = await apiClient.get(
+          `/rest/v1/furnitures?name=ilike.${encodeURIComponent(targetName)}&select=id&limit=1`,
+        )
+        if (Array.isArray(rows) && rows.length > 0 && rows[0].id != null) {
+          return Number(rows[0].id)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return null
+  }
+
+  /**
+   * SINKRONISASI ULASAN OFFLINE -> ONLINE:
+   * Mengirim semua ulasan yang ditambahkan saat HP offline ke tabel `public.reviews` di Supabase.
+   */
+  async syncPendingReviews() {
+    if (!isSupabaseConfigured() || !navigator.onLine || isSyncingReviews) {
+      return { syncedCount: 0 }
+    }
+
+    isSyncingReviews = true
+    let syncedCount = 0
+
+    try {
+      const pendingQueue = readPendingReviews()
+      const allLocal = readLocalReviews()
+
+      // Kumpulkan juga ulasan di LOCAL_REVIEWS_KEY yang masih ber-ID 'rev-...' (selain 2 seed statis)
+      const mergedMap = new Map()
+      pendingQueue.forEach((r) => mergedMap.set(String(r.id), r))
+
+      Object.entries(allLocal).forEach(([fId, list]) => {
+        if (Array.isArray(list)) {
+          list.forEach((r) => {
+            if (
+              r &&
+              String(r.id).startsWith('rev-') &&
+              !STATIC_SEED_REVIEW_IDS.has(String(r.id)) &&
+              !r.is_deleted
+            ) {
+              mergedMap.set(String(r.id), { ...r, furniture_id: r.furniture_id || fId })
+            }
+          })
+        }
+      })
+
+      const toSync = Array.from(mergedMap.values())
+      if (toSync.length === 0) {
+        return { syncedCount: 0 }
+      }
+
+      for (const offlineRev of toSync) {
+        try {
+          const numericId = await this._resolveNumericFurnitureId(
+            offlineRev.furniture_id,
+            offlineRev.product_name,
+          )
+          if (numericId !== null) {
+            const created = await this._insertReviewToSupabase(numericId, offlineRev)
+            if (created && created.id !== undefined) {
+              removePendingReview(offlineRev.id)
+
+              // Perbarui di LOCAL_REVIEWS_KEY agar menggunakan ID database asli dan tidak duplikat
+              const latestLocal = readLocalReviews()
+              const oldKey = String(offlineRev.furniture_id)
+              const newKey = String(numericId)
+
+              const formattedCreated = {
+                id: created.id,
+                furniture_id: numericId,
+                user_identifier:
+                  created.user_name ||
+                  offlineRev.user_identifier ||
+                  offlineRev.user_name ||
+                  'Pelanggan',
+                rating: created.rating || offlineRev.rating || 5,
+                comment: created.comment || offlineRev.comment || '',
+                pending_sync: false,
+                is_deleted: false,
+                deleted_at: null,
+                created_at: created.created_at || new Date().toISOString(),
+              }
+
+              if (Array.isArray(latestLocal[oldKey])) {
+                latestLocal[oldKey] = latestLocal[oldKey].filter(
+                  (r) => String(r.id) !== String(offlineRev.id),
+                )
+              }
+              const targetArr = Array.isArray(latestLocal[newKey]) ? latestLocal[newKey] : []
+              latestLocal[newKey] = [
+                formattedCreated,
+                ...targetArr.filter((r) => String(r.id) !== String(created.id)),
+              ]
+              writeLocalReviews(latestLocal)
+              syncedCount++
+            }
+          }
+        } catch (err) {
+          console.warn('[ReviewService] Gagal sync ulasan offline, akan dicoba lagi:', err.message)
+        }
+      }
+    } finally {
+      isSyncingReviews = false
+    }
+
+    return { syncedCount }
+  }
+
+  /**
+   * Mengambil daftar ulasan aktif & soft-deleted untuk 1 produk.
+   * Wajib menjalankan syncPendingReviews() terlebih dahulu agar ulasan offline langsung masuk ke Supabase!
    */
   async getReviews(furnitureId) {
     const deletedIds = readSoftDeletedReviewIds()
+    const idMap = readSyncedIdMap()
+    const resolvedId = idMap[String(furnitureId)] || furnitureId
+
     const localArchive = readDeletedReviewArchive().filter(
-      (r) => String(r.furniture_id) === String(furnitureId),
+      (r) =>
+        String(r.furniture_id) === String(furnitureId) ||
+        String(r.furniture_id) === String(resolvedId),
     )
 
-    if (isSupabaseConfigured() && navigator.onLine && !String(furnitureId).startsWith('furn-')) {
+    if (isSupabaseConfigured() && navigator.onLine) {
       try {
-        const data = await apiClient.get(
-          `/rest/v1/reviews?furniture_id=eq.${furnitureId}&select=*&order=created_at.desc`,
-        )
-        if (Array.isArray(data)) {
-          const formatRow = (r) => ({
-            id: r.id,
-            furniture_id: r.furniture_id,
-            user_identifier:
-              r.user_name ||
-              (r.user_id ? `Pelanggan ${String(r.user_id).substring(0, 8)}` : 'Pelanggan'),
-            rating: r.rating,
-            comment: String(r.comment || '').replace(/^\[DELETED\]\s*/, ''),
-            original_comment: String(r.comment || '').replace(/^\[DELETED\]\s*/, ''),
-            is_deleted: isReviewSoftDeleted(r, deletedIds),
-            deleted_at: r.deleted_at || null,
-            created_at: r.created_at,
-          })
+        // 1. Sinkronkan ulasan offline terlebih dahulu!
+        await this.syncPendingReviews()
 
-          const activeReviews = data
-            .filter((r) => !isReviewSoftDeleted(r, deletedIds))
-            .map(formatRow)
+        if (!String(resolvedId).startsWith('furn-')) {
+          const data = await apiClient.get(
+            `/rest/v1/reviews?furniture_id=eq.${resolvedId}&select=*&order=created_at.desc`,
+          )
+          if (Array.isArray(data)) {
+            const formatRow = (r) => ({
+              id: r.id,
+              furniture_id: r.furniture_id,
+              user_identifier:
+                r.user_name ||
+                (r.user_id ? `Pelanggan ${String(r.user_id).substring(0, 8)}` : 'Pelanggan'),
+              rating: r.rating,
+              comment: String(r.comment || '').replace(/^\[DELETED\]\s*/, ''),
+              original_comment: String(r.comment || '').replace(/^\[DELETED\]\s*/, ''),
+              is_deleted: isReviewSoftDeleted(r, deletedIds),
+              deleted_at: r.deleted_at || null,
+              created_at: r.created_at,
+            })
 
-          const remoteDeleted = data
-            .filter((r) => isReviewSoftDeleted(r, deletedIds))
-            .map(formatRow)
+            let activeReviews = data
+              .filter((r) => !isReviewSoftDeleted(r, deletedIds))
+              .map(formatRow)
 
-          const delMap = new Map()
-          localArchive.forEach((r) => delMap.set(String(r.id), r))
-          remoteDeleted.forEach((r) => delMap.set(String(r.id), r))
+            // 2. Jika masih ada ulasan di antrean offline untuk produk ini yang belum sempat terkirim,
+            //    gabungkan di bagian atas agar tidak hilang dari tampilan!
+            const pendingForProduct = readPendingReviews().filter(
+              (p) =>
+                (String(p.furniture_id) === String(furnitureId) ||
+                  String(p.furniture_id) === String(resolvedId)) &&
+                !isReviewSoftDeleted(p, deletedIds),
+            )
+            if (pendingForProduct.length > 0) {
+              const existingComments = new Set(
+                activeReviews.map((a) => `${a.user_identifier}:${a.comment}`),
+              )
+              const unsynced = pendingForProduct.filter(
+                (p) => !existingComments.has(`${p.user_identifier}:${p.comment}`),
+              )
+              activeReviews = [...unsynced, ...activeReviews]
+            }
 
-          return {
-            success: true,
-            data: activeReviews,
-            deletedData: Array.from(delMap.values()),
+            const remoteDeleted = data
+              .filter((r) => isReviewSoftDeleted(r, deletedIds))
+              .map(formatRow)
+
+            const delMap = new Map()
+            localArchive.forEach((r) => delMap.set(String(r.id), r))
+            remoteDeleted.forEach((r) => delMap.set(String(r.id), r))
+
+            return {
+              success: true,
+              data: activeReviews,
+              deletedData: Array.from(delMap.values()),
+            }
           }
         }
       } catch {
@@ -180,9 +409,12 @@ class ReviewService {
     }
 
     const allLocal = readLocalReviews()
-    const allForProduct = allLocal[String(furnitureId)] || []
-    const activeList = allForProduct.filter((r) => !isReviewSoftDeleted(r, deletedIds))
-    const localDeleted = allForProduct.filter((r) => isReviewSoftDeleted(r, deletedIds))
+    const combinedLocal = [
+      ...(allLocal[String(resolvedId)] || []),
+      ...(String(resolvedId) !== String(furnitureId) ? allLocal[String(furnitureId)] || [] : []),
+    ]
+    const activeList = combinedLocal.filter((r) => !isReviewSoftDeleted(r, deletedIds))
+    const localDeleted = combinedLocal.filter((r) => isReviewSoftDeleted(r, deletedIds))
 
     const delMap = new Map()
     localArchive.forEach((r) => delMap.set(String(r.id), r))
@@ -195,71 +427,78 @@ class ReviewService {
     }
   }
 
+  /**
+   * CREATE ULASAN: Jika online langsung simpan ke Supabase; jika HP sedang offline,
+   * simpan ke antrean `kayu_ruang_pending_reviews_v1` agar otomatis di-sync saat kembali online!
+   */
   async createReview(furnitureId, reviewData) {
-    if (isSupabaseConfigured() && navigator.onLine && !String(furnitureId).startsWith('furn-')) {
+    const numericId = await this._resolveNumericFurnitureId(
+      furnitureId,
+      reviewData.product_name,
+    )
+
+    if (isSupabaseConfigured() && navigator.onLine && numericId !== null) {
       try {
-        const payload = {
-          furniture_id: Number(furnitureId),
-          user_id: reviewData.user_id || null,
-          user_name:
-            reviewData.user_name || reviewData.user_identifier || 'Pelanggan Kayu & Ruang',
-          rating: Number(reviewData.rating) || 5,
-          comment: reviewData.comment || '',
-          is_deleted: false,
-          deleted_at: null,
-        }
-        try {
-          const res = await apiClient.post('/rest/v1/reviews', payload, {
-            headers: { Prefer: 'return=representation' },
-          })
-          const created = Array.isArray(res) ? res[0] : res
-          return { success: true, data: created }
-        } catch {
-          const fallbackPayload = {
-            furniture_id: Number(furnitureId),
-            user_id: reviewData.user_id || null,
-            user_name:
-              reviewData.user_name || reviewData.user_identifier || 'Pelanggan Kayu & Ruang',
-            rating: Number(reviewData.rating) || 5,
-            comment: reviewData.comment || '',
+        const created = await this._insertReviewToSupabase(numericId, reviewData)
+        if (created) {
+          const formatted = {
+            id: created.id,
+            furniture_id: numericId,
+            user_identifier:
+              created.user_name ||
+              reviewData.user_name ||
+              reviewData.user_identifier ||
+              'Pelanggan Kayu & Ruang',
+            rating: created.rating || Number(reviewData.rating) || 5,
+            comment: created.comment || reviewData.comment || '',
+            pending_sync: false,
+            is_deleted: false,
+            deleted_at: null,
+            created_at: created.created_at || new Date().toISOString(),
           }
-          const res2 = await apiClient.post('/rest/v1/reviews', fallbackPayload, {
-            headers: { Prefer: 'return=representation' },
-          })
-          const created2 = Array.isArray(res2) ? res2[0] : res2
-          return { success: true, data: created2 }
+          const allLocal = readLocalReviews()
+          const key = String(numericId)
+          const existing = allLocal[key] || []
+          allLocal[key] = [formatted, ...existing]
+          writeLocalReviews(allLocal)
+          return { success: true, source: 'supabase', data: formatted }
         }
-      } catch {
-        /* fallback ke localStorage */
+      } catch (err) {
+        console.warn('[ReviewService] Koneksi gagal saat POST ulasan, masuk ke antrean offline:', err.message)
       }
     }
 
     const newRev = {
       id: `rev-${Date.now()}`,
-      furniture_id: String(furnitureId),
+      furniture_id: String(numericId ?? furnitureId),
+      product_name: reviewData.product_name || '',
+      user_name:
+        reviewData.user_name || reviewData.user_identifier || 'Pelanggan Kayu & Ruang',
       user_identifier:
         reviewData.user_name || reviewData.user_identifier || 'Pelanggan Kayu & Ruang',
       rating: Number(reviewData.rating) || 5,
       comment: reviewData.comment || '',
+      pending_sync: true,
       is_deleted: false,
       deleted_at: null,
       created_at: new Date().toISOString(),
     }
 
+    // Masukkan ke antrean sync offline & penyimpanan lokal
+    addPendingReview(newRev)
     const allLocal = readLocalReviews()
-    const existing = allLocal[String(furnitureId)] || []
-    allLocal[String(furnitureId)] = [newRev, ...existing]
+    const key = String(furnitureId)
+    const existing = allLocal[key] || []
+    allLocal[key] = [newRev, ...existing]
     writeLocalReviews(allLocal)
 
-    return { success: true, data: newRev }
+    return { success: true, source: 'offline_queue', data: newRev }
   }
 
-  /**
-   * SOFT DELETE ULASAN
-   */
   async deleteReview(reviewId, furnitureId, reviewObj = null) {
     const nowIso = new Date().toISOString()
     addSoftDeletedReviewRecord(reviewId, furnitureId, reviewObj)
+    removePendingReview(reviewId)
 
     if (isSupabaseConfigured() && navigator.onLine && !String(reviewId).startsWith('rev-')) {
       try {
@@ -301,9 +540,6 @@ class ReviewService {
     return { success: true, softDeleted: true, deleted_at: nowIso }
   }
 
-  /**
-   * RESTORE ULASAN (Kembalikan ulasan yang sudah di-soft delete)
-   */
   async restoreReview(reviewObj, furnitureId) {
     if (!reviewObj) return { success: false }
     const reviewId = reviewObj.id
@@ -361,11 +597,9 @@ class ReviewService {
     return { success: true }
   }
 
-  /**
-   * HARD DELETE ULASAN (Hapus Permanen dari Database `public.reviews`)
-   */
   async hardDeleteReview(reviewId, furnitureId) {
     removeSoftDeletedReviewRecord(reviewId)
+    removePendingReview(reviewId)
 
     if (isSupabaseConfigured() && navigator.onLine && !String(reviewId).startsWith('rev-')) {
       try {

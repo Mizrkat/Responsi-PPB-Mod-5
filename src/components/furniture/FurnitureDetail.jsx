@@ -88,6 +88,7 @@ export default function FurnitureDetail({
     e.preventDefault()
     const profile = getUserProfile()
     await createReview(furniture.id, {
+      product_name: furniture.name || '',
       user_name: profile.username || 'Pelanggan Kayu & Ruang',
       rating,
       comment: comment.trim(),

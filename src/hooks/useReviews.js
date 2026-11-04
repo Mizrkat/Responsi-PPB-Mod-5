@@ -25,6 +25,16 @@ export function useReviews(furnitureId) {
 
   useEffect(() => {
     fetchReviews()
+
+    const handleSyncOrOnline = () => {
+      fetchReviews()
+    }
+    window.addEventListener('supabase-sync-complete', handleSyncOrOnline)
+    window.addEventListener('online', handleSyncOrOnline)
+    return () => {
+      window.removeEventListener('supabase-sync-complete', handleSyncOrOnline)
+      window.removeEventListener('online', handleSyncOrOnline)
+    }
   }, [fetchReviews])
 
   const softDeleteReview = useCallback(

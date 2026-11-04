@@ -32,6 +32,16 @@ export function useFurnitures(params = {}) {
 
   useEffect(() => {
     fetchFurnitures()
+
+    const handleSyncOrOnline = () => {
+      fetchFurnitures()
+    }
+    window.addEventListener('supabase-sync-complete', handleSyncOrOnline)
+    window.addEventListener('online', handleSyncOrOnline)
+    return () => {
+      window.removeEventListener('supabase-sync-complete', handleSyncOrOnline)
+      window.removeEventListener('online', handleSyncOrOnline)
+    }
   }, [fetchFurnitures])
 
   return {

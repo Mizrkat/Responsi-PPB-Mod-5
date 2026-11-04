@@ -122,6 +122,35 @@ class UploadService {
     }
   }
 
+
+  /**
+   * Mengunggah gambar berformat Base64 Data URL (yang disimpan saat HP sedang offline)
+   * ke Supabase Storage Bucket saat kembali online.
+   */
+  async uploadDataUrlToSupabase(dataUrl, bucketName = 'furnitures', folder = 'products') {
+    if (!dataUrl || !String(dataUrl).startsWith('data:image/')) {
+      return { success: false, url: dataUrl }
+    }
+    if (!isSupabaseConfigured() || !navigator.onLine) {
+      return { success: false, url: dataUrl }
+    }
+    try {
+      const res = await fetch(dataUrl)
+      const blob = await res.blob()
+      const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg')
+      const file = new File([blob], `offline_${Date.now()}.${ext}`, {
+        type: blob.type || 'image/jpeg',
+      })
+      const uploaded = await this.uploadImage(file, bucketName, folder)
+      if (uploaded.success && uploaded.source === 'supabase_storage' && uploaded.data?.url) {
+        return { success: true, url: uploaded.data.url }
+      }
+    } catch (err) {
+      console.warn('[UploadService] Gagal sync gambar Base64 ke Storage:', err.message)
+    }
+    return { success: false, url: dataUrl }
+  }
+
   /**
    * Mengambil daftar file yang tersimpan di dalam Supabase Storage Bucket
    */

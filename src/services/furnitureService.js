@@ -1,9 +1,21 @@
 import { apiClient, isSupabaseConfigured } from '../config/api'
+import uploadService from './uploadService'
 import FURNITURES_LOCAL from '../data/furnitures'
 
 const LOCAL_CATALOG_KEY = 'kayu_ruang_catalog_items_v1'
+const PENDING_FURNITURES_KEY = 'kayu_ruang_pending_furnitures_v1'
+const SYNCED_ID_MAP_KEY = 'kayu_ruang_synced_id_map_v1'
 const SOFT_DELETED_FURN_KEY = 'kayu_ruang_soft_deleted_furnitures_v1'
 const SOFT_DELETED_ARCHIVE_KEY = 'kayu_ruang_soft_deleted_archive_v1'
+
+const STATIC_SEED_IDS = new Set([
+  'furn-101',
+  'furn-102',
+  'furn-103',
+  'furn-104',
+  'furn-105',
+  'furn-106',
+])
 
 const ASSEMBLY_LABELS = {
   mudah: 'Siap Pakai (Fully Assembled)',
@@ -12,6 +24,55 @@ const ASSEMBLY_LABELS = {
 }
 
 const formatAssemblyType = (val) => ASSEMBLY_LABELS[val] || val || 'Siap Pakai (Fully Assembled)'
+
+// --- Persistent Offline Queue Helpers ---
+export const readPendingFurnitures = () => {
+  try {
+    const raw = localStorage.getItem(PENDING_FURNITURES_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+export const writePendingFurnitures = (items) => {
+  try {
+    localStorage.setItem(PENDING_FURNITURES_KEY, JSON.stringify(items))
+  } catch {
+    /* ignore */
+  }
+}
+
+export const addPendingFurniture = (item) => {
+  if (!item) return
+  const current = readPendingFurnitures().filter((i) => String(i.id) !== String(item.id))
+  writePendingFurnitures([{ ...item, pending_sync: true }, ...current])
+}
+
+export const removePendingFurniture = (id) => {
+  const current = readPendingFurnitures().filter((i) => String(i.id) !== String(id))
+  writePendingFurnitures(current)
+}
+
+export const readSyncedIdMap = () => {
+  try {
+    const raw = localStorage.getItem(SYNCED_ID_MAP_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+export const saveSyncedIdMapping = (localId, remoteId) => {
+  try {
+    const map = readSyncedIdMap()
+    map[String(localId)] = remoteId
+    localStorage.setItem(SYNCED_ID_MAP_KEY, JSON.stringify(map))
+  } catch {
+    /* ignore */
+  }
+}
 
 export const readSoftDeletedIds = () => {
   try {
@@ -133,6 +194,7 @@ export const resetLocalCatalog = () => {
   try {
     localStorage.removeItem(SOFT_DELETED_FURN_KEY)
     localStorage.removeItem(SOFT_DELETED_ARCHIVE_KEY)
+    localStorage.removeItem(PENDING_FURNITURES_KEY)
     localStorage.setItem(LOCAL_CATALOG_KEY, JSON.stringify(FURNITURES_LOCAL))
     return [...FURNITURES_LOCAL]
   } catch {
@@ -208,6 +270,8 @@ export const normalizeFurniture = (item) => {
   }
 }
 
+let isSyncingFurnitures = false
+
 class FurnitureService {
   async _insertToSupabase(data) {
     const specsList = Array.isArray(data.specs)
@@ -223,10 +287,23 @@ class FurnitureService {
     const category = data.category || data.type || 'Kursi'
     const material = data.material || data.caliber || 'Kayu Jati Solid'
     const assemblyType = formatAssemblyType(data.assembly_type || data.difficulty)
-    const cleanImageUrl =
+
+    // Jika gambar berupa Base64 Data URL (diunggah saat HP offline), coba unggah ke Storage Bucket terlebih dahulu
+    let cleanImageUrl =
       data.image_url && !String(data.image_url).startsWith('blob:')
         ? data.image_url
         : '/furniture/chair.jpg'
+
+    if (String(cleanImageUrl).startsWith('data:image/')) {
+      const uploaded = await uploadService.uploadDataUrlToSupabase(
+        cleanImageUrl,
+        'furnitures',
+        'products',
+      )
+      if (uploaded.success && uploaded.url) {
+        cleanImageUrl = uploaded.url
+      }
+    }
 
     const fullPayload = {
       name: (data.name || '').trim() || 'Produk Furniture Baru',
@@ -269,7 +346,72 @@ class FurnitureService {
   }
 
   /**
-   * READ: Mengambil daftar produk aktif dan daftar produk yang di-soft-delete
+   * SINKRONISASI OFFLINE -> ONLINE:
+   * Mengirim seluruh item katalog yang ditambahkan saat HP offline ke tabel `public.furnitures` di Supabase.
+   */
+  async syncPendingFurnitures() {
+    if (!isSupabaseConfigured() || !navigator.onLine || isSyncingFurnitures) {
+      return { syncedCount: 0 }
+    }
+
+    isSyncingFurnitures = true
+    let syncedCount = 0
+
+    try {
+      // Kumpulkan item dari antrean offline (PENDING_FURNITURES_KEY) maupun item lokal ber-ID 'furn-...'
+      const pendingQueue = readPendingFurnitures()
+      const localItems = readLocalCatalog()
+      const customLocalItems = localItems.filter(
+        (item) =>
+          String(item.id).startsWith('furn-') &&
+          !STATIC_SEED_IDS.has(String(item.id)),
+      )
+
+      const mergedPendingMap = new Map()
+      pendingQueue.forEach((item) => mergedPendingMap.set(String(item.id), item))
+      customLocalItems.forEach((item) => {
+        if (!mergedPendingMap.has(String(item.id))) {
+          mergedPendingMap.set(String(item.id), item)
+        }
+      })
+
+      const toSync = Array.from(mergedPendingMap.values())
+      if (toSync.length === 0) {
+        return { syncedCount: 0 }
+      }
+
+      for (const offlineItem of toSync) {
+        try {
+          // Cek apakah sudah pernah masuk ke Supabase berdasarkan nama yang persis sama dalam beberapa detik terakhir
+          const created = await this._insertToSupabase(offlineItem)
+          if (created && created.id !== undefined) {
+            saveSyncedIdMapping(offlineItem.id, created.id)
+            removePendingFurniture(offlineItem.id)
+
+            // Perbarui ID lokal di LOCAL_CATALOG_KEY menjadi ID database asli
+            const latestLocal = readLocalCatalog()
+            const updatedLocal = latestLocal.map((loc) =>
+              String(loc.id) === String(offlineItem.id)
+                ? { ...created, pending_sync: false }
+                : loc,
+            )
+            writeLocalCatalog(updatedLocal)
+            syncedCount++
+          }
+        } catch (err) {
+          console.warn('[FurnitureService] Gagal sync item offline, akan dicoba lagi:', err.message)
+        }
+      }
+    } finally {
+      isSyncingFurnitures = false
+    }
+
+    return { syncedCount }
+  }
+
+  /**
+   * READ: Mengambil daftar produk aktif & soft-deleted.
+   * Wajib menjalankan syncPendingFurnitures() terlebih dahulu agar item offline masuk ke database!
    */
   async getFurnitures(params = {}) {
     const deletedRegistry = readSoftDeletedIds()
@@ -277,6 +419,9 @@ class FurnitureService {
 
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
+        // 1. Sinkronkan item offline yang belum terkirim ke Supabase terlebih dahulu!
+        await this.syncPendingFurnitures()
+
         const queryParts = ['select=*']
         if (params.search) {
           queryParts.push(`name=ilike.*${encodeURIComponent(params.search)}*`)
@@ -296,7 +441,20 @@ class FurnitureService {
           .filter((row) => !isItemSoftDeleted(row, deletedRegistry))
           .map(normalizeFurniture)
 
-        // Gabungkan baris yang di-soft-delete di server maupun arsip lokal
+        // 2. Jika masih ada item di antrean offline yang belum berhasil ter-upload (misal sinyal baru menyambung),
+        //    pertahankan di urutan teratas agar TIDAK hilang tertimpa!
+        const remainingPending = readPendingFurnitures()
+          .filter((p) => !isItemSoftDeleted(p, deletedRegistry))
+          .map(normalizeFurniture)
+
+        if (remainingPending.length > 0) {
+          const existingNames = new Set(activeList.map((a) => (a.name || '').toLowerCase()))
+          const stillUnsynced = remainingPending.filter(
+            (p) => !existingNames.has((p.name || '').toLowerCase()),
+          )
+          activeList = [...stillUnsynced, ...activeList]
+        }
+
         const remoteDeleted = allRows
           .filter((row) => isItemSoftDeleted(row, deletedRegistry))
           .map(normalizeFurniture)
@@ -308,7 +466,7 @@ class FurnitureService {
 
         const isUnfiltered =
           !params.search && (!params.category || params.category === 'Semua' || params.category === 'All')
-        if (allRows.length === 0 && isUnfiltered) {
+        if (allRows.length === 0 && activeList.length === 0 && isUnfiltered) {
           const seeded = []
           for (const seedItem of FURNITURES_LOCAL) {
             try {
@@ -356,9 +514,12 @@ class FurnitureService {
   }
 
   async getFurnitureById(id) {
-    if (isSupabaseConfigured() && navigator.onLine && !String(id).startsWith('furn-')) {
+    const idMap = readSyncedIdMap()
+    const resolvedId = idMap[String(id)] || id
+
+    if (isSupabaseConfigured() && navigator.onLine && !String(resolvedId).startsWith('furn-')) {
       try {
-        const data = await apiClient.get(`/rest/v1/furnitures?id=eq.${id}&select=*`)
+        const data = await apiClient.get(`/rest/v1/furnitures?id=eq.${resolvedId}&select=*`)
         if (Array.isArray(data) && data.length > 0 && !isItemSoftDeleted(data[0])) {
           return { success: true, data: normalizeFurniture(data[0]) }
         }
@@ -367,13 +528,19 @@ class FurnitureService {
       }
     }
     const localItems = readLocalCatalog()
-    const found = localItems.find((item) => String(item.id) === String(id))
+    const found = localItems.find(
+      (item) => String(item.id) === String(id) || String(item.id) === String(resolvedId),
+    )
     if (found) {
       return { success: true, data: normalizeFurniture(found) }
     }
     throw new Error('Produk furniture tidak ditemukan.')
   }
 
+  /**
+   * CREATE: Jika online langsung simpan ke Supabase; jika offline (atau koneksi HP terputus),
+   * masukkan ke antrean `kayu_ruang_pending_furnitures_v1` agar otomatis di-sync saat online kembali!
+   */
   async createFurniture(data) {
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
@@ -382,27 +549,35 @@ class FurnitureService {
         writeLocalCatalog([created, ...current.filter((i) => String(i.id) !== String(created.id))])
         return { success: true, source: 'supabase', data: created }
       } catch (err) {
-        console.error('[FurnitureService] Error saat INSERT ke Supabase:', err)
+        console.warn('[FurnitureService] Koneksi gagal saat INSERT, memasukkan ke antrean sync offline:', err.message)
       }
     }
 
     const localCreated = normalizeFurniture({
       ...data,
       id: `furn-${Date.now()}`,
+      pending_sync: true,
       is_deleted: false,
       deleted_at: null,
       created_at: new Date().toISOString(),
     })
+
+    // Simpan ke antrean pending offline & katalog lokal
+    addPendingFurniture(localCreated)
     const current = readLocalCatalog()
     writeLocalCatalog([localCreated, ...current])
+
     return {
       success: true,
-      source: 'local',
+      source: 'offline_queue',
       data: localCreated,
     }
   }
 
   async updateFurniture(id, data) {
+    const idMap = readSyncedIdMap()
+    const actualId = idMap[String(id)] || id
+
     const specsList = Array.isArray(data.specs)
       ? data.specs.map((i) => ({ name: i.name || 'Spesifikasi', quantity: i.quantity || '-' }))
       : Array.isArray(data.ingredients)
@@ -437,7 +612,7 @@ class FurnitureService {
 
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
-        let targetDbId = !String(id).startsWith('furn-') ? id : null
+        let targetDbId = !String(actualId).startsWith('furn-') ? actualId : null
         if (!targetDbId && payload.name) {
           const existing = await apiClient.get(
             `/rest/v1/furnitures?name=ilike.${encodeURIComponent(payload.name)}&select=id&limit=1`,
@@ -456,11 +631,18 @@ class FurnitureService {
           updated = normalizeFurniture(row || { ...data, ...payload, id: targetDbId })
         } else {
           updated = await this._insertToSupabase({ ...data, ...payload })
+          if (updated && updated.id) {
+            saveSyncedIdMapping(id, updated.id)
+            removePendingFurniture(id)
+          }
         }
 
         const current = readLocalCatalog()
         const idx = current.findIndex(
-          (item) => String(item.id) === String(id) || String(item.id) === String(updated.id),
+          (item) =>
+            String(item.id) === String(id) ||
+            String(item.id) === String(actualId) ||
+            String(item.id) === String(updated.id),
         )
         if (idx > -1) {
           current[idx] = updated
@@ -481,7 +663,11 @@ class FurnitureService {
       ...data,
       ...payload,
       id,
+      pending_sync: true,
     })
+    if (String(id).startsWith('furn-')) {
+      addPendingFurniture(updatedItem)
+    }
     if (idx > -1) {
       current[idx] = updatedItem
     } else {
@@ -491,9 +677,6 @@ class FurnitureService {
     return { success: true, source: 'local', data: updatedItem }
   }
 
-  /**
-   * SOFT DELETE: Menandai item sebagai terhapus (is_deleted = true, deleted_at = timestamp)
-   */
   async deleteFurniture(id, itemName = '', fullItem = null) {
     const nowIso = new Date().toISOString()
     const current = readLocalCatalog()
@@ -504,11 +687,14 @@ class FurnitureService {
       ) || { id, name: itemName }
 
     addSoftDeletedRecord(targetObj, itemName)
+    removePendingFurniture(id)
 
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
-        const filterQuery = !String(id).startsWith('furn-')
-          ? `id=eq.${id}`
+        const idMap = readSyncedIdMap()
+        const resolvedId = idMap[String(id)] || id
+        const filterQuery = !String(resolvedId).startsWith('furn-')
+          ? `id=eq.${resolvedId}`
           : itemName
           ? `name=eq.${encodeURIComponent(itemName)}`
           : null
@@ -550,9 +736,6 @@ class FurnitureService {
     return { success: true, softDeleted: true, deleted_at: nowIso }
   }
 
-  /**
-   * RESTORE (Kembalikan dari Soft Delete): Mengubah is_deleted = false & deleted_at = null
-   */
   async restoreFurniture(item) {
     if (!item) return { success: false }
     const id = item.id
@@ -565,8 +748,10 @@ class FurnitureService {
 
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
-        const filterQuery = !String(id).startsWith('furn-')
-          ? `id=eq.${id}`
+        const idMap = readSyncedIdMap()
+        const resolvedId = idMap[String(id)] || id
+        const filterQuery = !String(resolvedId).startsWith('furn-')
+          ? `id=eq.${resolvedId}`
           : itemName
           ? `name=eq.${encodeURIComponent(itemName)}`
           : null
@@ -613,16 +798,16 @@ class FurnitureService {
     return { success: true, data: restoredObj }
   }
 
-  /**
-   * HARD DELETE (Hapus Permanen dari Database): Menghapus baris fisik dari `public.furnitures`
-   */
   async hardDeleteFurniture(id, itemName = '') {
     removeSoftDeletedRecord(id, itemName)
+    removePendingFurniture(id)
 
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
-        const filterQuery = !String(id).startsWith('furn-')
-          ? `id=eq.${id}`
+        const idMap = readSyncedIdMap()
+        const resolvedId = idMap[String(id)] || id
+        const filterQuery = !String(resolvedId).startsWith('furn-')
+          ? `id=eq.${resolvedId}`
           : itemName
           ? `name=eq.${encodeURIComponent(itemName)}`
           : null
