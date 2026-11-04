@@ -2,21 +2,62 @@ import axios from 'axios'
 
 // ---------------------------------------------------------------------------
 // Base URL & Supabase Key Configuration
-// Read from environment variables (.env)
+// Membaca dari file .env (import.meta.env) dengan dukungan runtime override
+// dari localStorage agar praktikan dapat menguji berbagai proyek Supabase.
 // ---------------------------------------------------------------------------
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
-const SUPABASE_KEY =
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  ''
-const IS_SUPABASE =
-  BASE_URL.includes('supabase.co') || Boolean(SUPABASE_KEY)
+const ENV_STORAGE_KEY = 'kayu_ruang_supabase_env'
 
-if (!BASE_URL) {
-  console.warn(
-    '[api] VITE_API_BASE_URL is not set. API requests will use local storage fallback.',
-  )
+export const getDefaultEnvConfig = () => ({
+  VITE_API_BASE_URL:
+    import.meta.env.VITE_API_BASE_URL || 'https://sxunubxupdxyupnebuid.supabase.co',
+  VITE_SUPABASE_PUBLISHABLE_KEY:
+    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    import.meta.env.VITE_SUPABASE_ANON_KEY ||
+    'sb_publishable_TXg9-r3ZVI8YZMzE90nwsQ_PU9GAmzg',
+  VITE_SUPABASE_BUCKET: import.meta.env.VITE_SUPABASE_BUCKET || 'guns',
+})
+
+export const getActiveEnvConfig = () => {
+  const defaults = getDefaultEnvConfig()
+  try {
+    const raw = localStorage.getItem(ENV_STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      return {
+        VITE_API_BASE_URL: parsed.VITE_API_BASE_URL || defaults.VITE_API_BASE_URL,
+        VITE_SUPABASE_PUBLISHABLE_KEY:
+          parsed.VITE_SUPABASE_PUBLISHABLE_KEY || defaults.VITE_SUPABASE_PUBLISHABLE_KEY,
+        VITE_SUPABASE_BUCKET: parsed.VITE_SUPABASE_BUCKET || defaults.VITE_SUPABASE_BUCKET,
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return defaults
 }
+
+export const saveActiveEnvConfig = (config) => {
+  try {
+    localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(config))
+    return true
+  } catch {
+    return false
+  }
+}
+
+export const resetActiveEnvConfig = () => {
+  try {
+    localStorage.removeItem(ENV_STORAGE_KEY)
+  } catch {
+    /* ignore */
+  }
+  return getDefaultEnvConfig()
+}
+
+const initialEnv = getActiveEnvConfig()
+const BASE_URL = initialEnv.VITE_API_BASE_URL
+const SUPABASE_KEY = initialEnv.VITE_SUPABASE_PUBLISHABLE_KEY
+const IS_SUPABASE = BASE_URL.includes('supabase.co') || Boolean(SUPABASE_KEY)
 
 // ---------------------------------------------------------------------------
 // Axios instance
@@ -30,15 +71,17 @@ const apiClient = axios.create({
 })
 
 // ---------------------------------------------------------------------------
-// Request interceptor — attach Supabase headers (apikey & Bearer auth)
+// Request interceptor — attach dynamic Supabase baseURL & headers (apikey & Bearer)
 // ---------------------------------------------------------------------------
 apiClient.interceptors.request.use(
   (config) => {
-    if (IS_SUPABASE && SUPABASE_KEY) {
-      config.headers['apikey'] = SUPABASE_KEY
-      if (!config.headers['Authorization']) {
-        config.headers['Authorization'] = `Bearer ${SUPABASE_KEY}`
-      }
+    const currentEnv = getActiveEnvConfig()
+    if (currentEnv.VITE_API_BASE_URL) {
+      config.baseURL = currentEnv.VITE_API_BASE_URL.replace(/\/+$/, '')
+    }
+    if (currentEnv.VITE_SUPABASE_PUBLISHABLE_KEY) {
+      config.headers['apikey'] = currentEnv.VITE_SUPABASE_PUBLISHABLE_KEY
+      config.headers['Authorization'] = `Bearer ${currentEnv.VITE_SUPABASE_PUBLISHABLE_KEY}`
     }
     return config
   },
