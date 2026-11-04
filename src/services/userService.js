@@ -1,16 +1,21 @@
 import { apiClient, isSupabaseConfigured } from '../config/api'
 import uploadService from './uploadService'
 
-// ---------------------------------------------------------------------------
-// userService.js — CRUD Profil Akun Praktikan ke Tabel `public.profiles` Supabase
-// Menggunakan alur eksplisit:
-//   - READ (GET /rest/v1/profiles) + Auto-Seed jika tabel kosong
-//   - UPDATE (PATCH /rest/v1/profiles?id=eq.<id>) jika baris profil sudah ada
-//   - CREATE (POST /rest/v1/profiles) jika baris profil belum ada
-// ---------------------------------------------------------------------------
 const USER_IDENTIFIER_KEY = 'kayu_ruang_user_id'
-const USER_PROFILE_KEY = 'kayu_ruang_user_profile'
+const USER_PROFILE_KEY = 'kayu_ruang_user_profile_v2'
 const DEFAULT_SEED_UUID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
+
+const DEFAULT_PROFILE_DATA = {
+  id: null,
+  username: 'Radhine Muhammad Rossie',
+  nim: '21120124120017',
+  kelompok: 'Kelompok 37 — Praktikum PPB',
+  prodi: 'Teknik Komputer — Universitas Diponegoro',
+  bio: 'Pengembang Aplikasi Progressive Web App (PWA) Katalog & Inventaris Toko Furniture Kayu & Ruang.',
+  avatar: null,
+  avatar_url: null,
+  userId: DEFAULT_SEED_UUID,
+}
 
 const isValidUUID = (str) =>
   typeof str === 'string' &&
@@ -35,6 +40,7 @@ export const getUserProfile = () => {
     if (raw) {
       const parsed = JSON.parse(raw)
       return {
+        ...DEFAULT_PROFILE_DATA,
         ...parsed,
         userId: parsed.userId || parsed.user_id || getUserIdentifier(),
         avatar: parsed.avatar_url || parsed.avatar || null,
@@ -45,14 +51,7 @@ export const getUserProfile = () => {
     /* fallback */
   }
   return {
-    id: null,
-    username: 'Mahasiswa Praktikan PPB',
-    nim: '21120123140001',
-    kelompok: 'Kelompok 05 — Praktikum PPB',
-    prodi: 'Teknik Komputer — Universitas Diponegoro',
-    bio: 'Pengembang Aplikasi Progressive Web App (PWA) Katalog Toko Furniture Kayu & Ruang.',
-    avatar: null,
-    avatar_url: null,
+    ...DEFAULT_PROFILE_DATA,
     userId: getUserIdentifier(),
   }
 }
@@ -64,6 +63,7 @@ export const saveUserProfile = (profile) => {
       localStorage.setItem(USER_IDENTIFIER_KEY, userId)
     }
     const data = {
+      ...DEFAULT_PROFILE_DATA,
       ...profile,
       userId,
       user_id: userId,
@@ -78,56 +78,81 @@ export const saveUserProfile = (profile) => {
   }
 }
 
-/**
- * Normalisasi baris dari tabel `public.profiles`
- */
 const normalizeProfileRow = (row, fallback) => ({
   id: row.id ?? fallback.id ?? null,
   userId: row.user_id || fallback.userId || DEFAULT_SEED_UUID,
   user_id: row.user_id || fallback.userId || DEFAULT_SEED_UUID,
-  username: row.username || row.name || fallback.username || 'Mahasiswa Praktikan PPB',
-  nim: row.nim || fallback.nim || '21120123140001',
-  kelompok: row.kelompok || row.group_name || fallback.kelompok || 'Kelompok 05',
-  prodi: row.prodi || fallback.prodi || 'Teknik Komputer — Universitas Diponegoro',
-  bio: row.bio ?? fallback.bio ?? '',
+  username:
+    row.username && row.username !== 'Mahasiswa Praktikan PPB'
+      ? row.username
+      : fallback.username || DEFAULT_PROFILE_DATA.username,
+  nim:
+    row.nim && row.nim !== '21120123140001'
+      ? row.nim
+      : fallback.nim || DEFAULT_PROFILE_DATA.nim,
+  kelompok:
+    row.kelompok && !String(row.kelompok).includes('Kelompok 05')
+      ? row.kelompok
+      : fallback.kelompok || DEFAULT_PROFILE_DATA.kelompok,
+  prodi: row.prodi || fallback.prodi || DEFAULT_PROFILE_DATA.prodi,
+  bio: row.bio ?? fallback.bio ?? DEFAULT_PROFILE_DATA.bio,
   avatar: row.avatar_url || row.avatar || fallback.avatar || null,
   avatar_url: row.avatar_url || row.avatar || fallback.avatar_url || null,
   updatedAt: row.updated_at || new Date().toISOString(),
 })
 
-/**
- * READ: Mengambil data profil akun dari tabel `public.profiles` di Supabase.
- * Jika tabel `public.profiles` masih kosong (0 baris), otomatis melakukan INSERT baris awal.
- */
 export const fetchProfileFromSupabase = async () => {
   const userId = getUserIdentifier()
   const localProf = getUserProfile()
 
   if (isSupabaseConfigured() && navigator.onLine) {
     try {
-      // 1. Cari berdasarkan user_id aktif
       let rows = await apiClient.get(
         `/rest/v1/profiles?user_id=eq.${userId}&select=*&limit=1`,
       )
-      // 2. Jika belum ada yang cocok dengan user_id lokal, ambil baris profil terbaru di tabel public.profiles
       if (!Array.isArray(rows) || rows.length === 0) {
         rows = await apiClient.get('/rest/v1/profiles?select=*&order=id.asc&limit=1')
       }
 
       if (Array.isArray(rows) && rows.length > 0) {
-        const normalized = normalizeProfileRow(rows[0], localProf)
+        const row = rows[0]
+        // Jika baris di database masih berisi data placeholder lama (Kelompok 05 / 21120123140001),
+        // otomatis perbarui ke profil default baru (Radhine Muhammad Rossie - 21120124120017 - Kelompok 37)
+        if (
+          row.username === 'Mahasiswa Praktikan PPB' ||
+          row.nim === '21120123140001' ||
+          String(row.kelompok || '').includes('Kelompok 05')
+        ) {
+          const updatedDefault = await apiClient.patch(
+            `/rest/v1/profiles?id=eq.${row.id}`,
+            {
+              username: DEFAULT_PROFILE_DATA.username,
+              nim: DEFAULT_PROFILE_DATA.nim,
+              kelompok: DEFAULT_PROFILE_DATA.kelompok,
+              prodi: DEFAULT_PROFILE_DATA.prodi,
+              bio: DEFAULT_PROFILE_DATA.bio,
+              updated_at: new Date().toISOString(),
+            },
+            { headers: { Prefer: 'return=representation' } },
+          )
+          const patchedRow = Array.isArray(updatedDefault) ? updatedDefault[0] : updatedDefault
+          const normalized = normalizeProfileRow(patchedRow || row, DEFAULT_PROFILE_DATA)
+          saveUserProfile(normalized)
+          return { success: true, source: 'supabase', data: normalized }
+        }
+
+        const normalized = normalizeProfileRow(row, localProf)
         saveUserProfile(normalized)
         return { success: true, source: 'supabase', data: normalized }
       }
 
-      // 3. Jika tabel public.profiles kosong (0 baris), buat baris pertama secara otomatis (CREATE)
       const seedPayload = {
         user_id: userId,
-        username: localProf.username || 'Mahasiswa Praktikan PPB',
-        nim: localProf.nim || '21120123140001',
-        kelompok: localProf.kelompok || 'Kelompok 05 — Praktikum PPB',
-        prodi: localProf.prodi || 'Teknik Komputer — Universitas Diponegoro',
-        bio: localProf.bio || '',
+        username: localProf.username || DEFAULT_PROFILE_DATA.username,
+        nim: localProf.nim || DEFAULT_PROFILE_DATA.nim,
+        kelompok: localProf.kelompok || DEFAULT_PROFILE_DATA.kelompok,
+        prodi: localProf.prodi || DEFAULT_PROFILE_DATA.prodi,
+        bio: localProf.bio || DEFAULT_PROFILE_DATA.bio,
         avatar_url: localProf.avatar_url || null,
       }
       const inserted = await apiClient.post('/rest/v1/profiles', seedPayload, {
@@ -153,17 +178,12 @@ export const fetchProfileFromSupabase = async () => {
   return { success: true, source: 'local', data: localProf }
 }
 
-/**
- * UPDATE / CREATE: Menyimpan perubahan profil akun ke tabel `public.profiles` di Supabase.
- * Menggunakan pengecekan baris eksplisit (GET -> PATCH berdasarkan id/user_id, atau POST jika belum ada)
- * sehingga tidak pernah gagal akibat constraint on_conflict.
- */
 export const saveProfileToSupabase = async (profile) => {
   const userId = profile.userId || profile.user_id || getUserIdentifier()
-  const cleanUsername = (profile.username || '').trim() || 'Mahasiswa Praktikan PPB'
-  const cleanNim = (profile.nim || '').trim() || '21120123140001'
-  const cleanKelompok = (profile.kelompok || '').trim() || 'Kelompok 05'
-  const cleanProdi = (profile.prodi || '').trim() || 'Teknik Komputer — Universitas Diponegoro'
+  const cleanUsername = (profile.username || '').trim() || DEFAULT_PROFILE_DATA.username
+  const cleanNim = (profile.nim || '').trim() || DEFAULT_PROFILE_DATA.nim
+  const cleanKelompok = (profile.kelompok || '').trim() || DEFAULT_PROFILE_DATA.kelompok
+  const cleanProdi = (profile.prodi || '').trim() || DEFAULT_PROFILE_DATA.prodi
   const cleanBio = (profile.bio || '').trim()
   const cleanAvatar = profile.avatar_url ?? profile.avatar ?? null
 
@@ -181,7 +201,6 @@ export const saveProfileToSupabase = async (profile) => {
 
   if (isSupabaseConfigured() && navigator.onLine) {
     try {
-      // 1. Cari apakah sudah ada baris di tabel public.profiles
       let existingRow = null
       if (profile.id) {
         const byId = await apiClient.get(`/rest/v1/profiles?id=eq.${profile.id}&select=*&limit=1`)
@@ -209,7 +228,6 @@ export const saveProfileToSupabase = async (profile) => {
       let savedRow = null
 
       if (existingRow && existingRow.id !== undefined) {
-        // 2A. UPDATE baris yang sudah ada menggunakan PATCH berdasarkan id
         try {
           const res = await apiClient.patch(
             `/rest/v1/profiles?id=eq.${existingRow.id}`,
@@ -218,7 +236,6 @@ export const saveProfileToSupabase = async (profile) => {
           )
           savedRow = Array.isArray(res) ? res[0] : res
         } catch {
-          // Fallback jika tabel kustom pengguna hanya memiliki kolom dasar
           const minimalPayload = {
             username: cleanUsername,
             nim: cleanNim,
@@ -232,7 +249,6 @@ export const saveProfileToSupabase = async (profile) => {
           savedRow = Array.isArray(resMin) ? resMin[0] : resMin
         }
       } else {
-        // 2B. CREATE baris baru menggunakan POST jika tabel public.profiles masih kosong
         try {
           const res = await apiClient.post(
             '/rest/v1/profiles',
@@ -265,7 +281,7 @@ export const saveProfileToSupabase = async (profile) => {
       return {
         ...localSaved,
         source: 'local',
-        warning: err.message || 'Gagal menulis ke tabel public.profiles di Supabase.',
+        warning: err.message,
       }
     }
   }
@@ -273,14 +289,9 @@ export const saveProfileToSupabase = async (profile) => {
   return {
     ...localSaved,
     source: 'local',
-    warning: 'Konfigurasi .env Supabase belum aktif. Profil disimpan di LocalStorage.',
   }
 }
 
-/**
- * Mengunggah foto profil ke Supabase Storage Bucket (`avatars` / `furnitures`)
- * lalu langsung meng-update kolom `avatar_url` pada tabel `public.profiles`.
- */
 export const uploadAvatarToSupabase = async (file) => {
   const uploadRes = await uploadService.uploadImage(file, 'avatars', 'profiles')
   const avatarUrl = uploadRes.data?.url

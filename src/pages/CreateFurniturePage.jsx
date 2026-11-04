@@ -8,6 +8,7 @@ import {
   Save,
   CheckCircle,
   AlertCircle,
+  RefreshCw,
 } from 'lucide-react'
 import furnitureService from '../services/furnitureService'
 import uploadService from '../services/uploadService'
@@ -43,9 +44,11 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
     is_featured: false,
   })
 
+  // Mulai dengan null agar saat pengguna mengunggah gambar baru / memilih preset,
+  // gambar baru langsung muncul beserta tombol konfirmasi dan tombol ubah gambar (seperti Gambar 2)
   const [imageFile, setImageFile] = useState(null)
-  const [imagePreview, setImagePreview] = useState('/furniture/chair.jpg')
-  const [uploadedImageUrl, setUploadedImageUrl] = useState('/furniture/chair.jpg')
+  const [imagePreview, setImagePreview] = useState(null)
+  const [uploadedImageUrl, setUploadedImageUrl] = useState('')
 
   const [specs, setSpecs] = useState([
     { name: 'Dimensi (P x L x T)', quantity: '75 x 80 x 78 cm' },
@@ -69,7 +72,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
   const handleSaveDraft = useCallback(
     (notify = true) => {
       const saved = saveDraft(
-        { formData, specs, steps, uploadedImageUrl },
+        { formData, specs, steps, uploadedImageUrl: uploadedImageUrl || imagePreview },
         'create',
       )
       if (saved) {
@@ -81,7 +84,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
         }
       }
     },
-    [formData, specs, steps, uploadedImageUrl],
+    [formData, specs, steps, uploadedImageUrl, imagePreview],
   )
 
   useEffect(() => {
@@ -113,6 +116,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
     setDraftTimestamp(null)
   }
 
+  // Saat pilih file baru dari perangkat, langsung tampilkan pratinjau gambar barunya di Step 1
   const handleImageChange = (e) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -120,17 +124,24 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
     setImagePreview(URL.createObjectURL(file))
     setUploadedImageUrl('')
     setError('')
+    setSuccessMsg('Gambar baru berhasil dipilih. Silakan tinjau dan klik tombol konfirmasi di bawah.')
+    setTimeout(() => setSuccessMsg(''), 3000)
   }
 
+  // Saat pilih gambar bawaan (preset PWA), langsung tampilkan pratinjau gambar tersebut di Step 1
   const handleSelectPreset = (url) => {
     setImageFile(null)
     setImagePreview(url)
     setUploadedImageUrl(url)
-    setCurrentStep('form')
     setError('')
   }
 
-  const handleUploadImage = async () => {
+  // Tombol Konfirmasi Foto -> Unggah file (jika ada) lalu lanjut ke Step 2 (Form Detail)
+  const handleConfirmImage = async () => {
+    if (!imagePreview && !uploadedImageUrl && !imageFile) {
+      setError('Silakan pilih file foto dari perangkat atau pilih salah satu gambar bawaan terlebih dahulu.')
+      return
+    }
     if (!imageFile) {
       setUploadedImageUrl(uploadedImageUrl || imagePreview || '/furniture/chair.jpg')
       setCurrentStep('form')
@@ -145,15 +156,9 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
         setImagePreview(result.data.url)
         setImageFile(null)
         setCurrentStep('form')
-        setSuccessMsg(
-          result.source === 'supabase_storage'
-            ? 'Foto berhasil diunggah ke Supabase Storage Bucket (furnitures)!'
-            : 'Foto berhasil diproses!',
-        )
-        setTimeout(() => setSuccessMsg(''), 3000)
       }
     } catch (err) {
-      setError(err.message || 'Gagal mengunggah gambar.')
+      setError(err.message || 'Gagal memproses gambar.')
     } finally {
       setUploading(false)
     }
@@ -200,7 +205,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
     setError('')
 
     if (!formData.name.trim() || formData.name.trim().length < 3) {
-      setError('Nama produk furniture minimal 3 karakter.')
+      setError('Nama produk furnitur minimal 3 karakter.')
       return
     }
 
@@ -216,8 +221,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
     try {
       setCreating(true)
 
-      // Jika pengguna memilih file gambar tetapi belum menekan tombol upload di Step 1, unggah otomatis sekarang
-      let finalImageUrl = uploadedImageUrl
+      let finalImageUrl = uploadedImageUrl || imagePreview
       if (imageFile) {
         const upRes = await uploadService.uploadImage(imageFile, 'furnitures', 'products')
         if (upRes.success && upRes.data?.url) {
@@ -251,7 +255,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
         else if (onBack) onBack()
       }
     } catch (err) {
-      setError(err.message || 'Gagal menyimpan produk furniture ke database.')
+      setError(err.message || 'Gagal menyimpan koleksi furnitur.')
     } finally {
       setCreating(false)
     }
@@ -269,7 +273,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
             className="btn btn--outline btn--sm"
             onClick={() => handleSaveDraft(true)}
           >
-            <Save size={14} /> Simpan Draft Offline
+            <Save size={14} /> Simpan Draft
           </button>
         )}
       </div>
@@ -277,7 +281,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
       <div className="form-title-group">
         <h1 className="display">Tambah Koleksi Furnitur Baru</h1>
         <p className="lede">
-          Lengkapi foto studio, spesifikasi ukuran, serta panduan perawatan untuk menambahkan koleksi baru ke dalam katalog Kayu & Ruang.
+          Lengkapi foto studio, spesifikasi ukuran, serta panduan perawatan untuk menambahkan koleksi baru ke dalam katalog Kayu &amp; Ruang.
         </p>
       </div>
 
@@ -299,12 +303,18 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
           className={`step-badge ${currentStep === 'upload' ? 'step-badge--active' : 'step-badge--done'}`}
           style={{ cursor: 'pointer' }}
         >
-          1. Foto Produk Furniture
+          1. Foto Produk Furnitur
         </button>
         <div className="step-badge-connector" />
         <button
           type="button"
-          onClick={() => setCurrentStep('form')}
+          onClick={() => {
+            if (!imagePreview && !uploadedImageUrl) {
+              setImagePreview('/furniture/chair.jpg')
+              setUploadedImageUrl('/furniture/chair.jpg')
+            }
+            setCurrentStep('form')
+          }}
           className={`step-badge ${currentStep === 'form' ? 'step-badge--active' : ''}`}
           style={{ cursor: 'pointer' }}
         >
@@ -316,10 +326,11 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
         <div className="card-box">
           <h2 className="card-box-title">Foto Produk Furnitur</h2>
           <p className="card-box-desc">
-            Unggah foto produk (JPG, PNG, atau WebP maks. 5MB) atau pilih salah satu preset foto studio di bawah ini.
+            Unggah foto produk (JPG, PNG, atau WebP maks. 5MB) atau pilih salah satu gambar bawaan studio di bawah ini.
           </p>
 
-          <div className="upload-dropzone" style={{ marginBottom: 18 }}>
+          {/* Dropzone Upload & Pilihan Gambar Bawaan PWA (Selalu tersedia agar mudah mengganti gambar) */}
+          <div className="upload-dropzone" style={{ marginBottom: imagePreview ? 24 : 0 }}>
             <input
               id="furniture-image-input"
               type="file"
@@ -350,27 +361,61 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
             </div>
           </div>
 
+          {/* Pratinjau Gambar Baru + Tombol Konfirmasi + Tombol Ubah Gambar (Sesuai Gambar 2) */}
           {imagePreview && (
             <div className="preview-container">
               <div className="preview-image-wrap">
-                <img src={imagePreview} alt="Preview Furniture" className="preview-img" />
+                <img src={imagePreview} alt="Preview Furnitur" className="preview-img" />
+                <button
+                  type="button"
+                  className="preview-remove-btn"
+                  onClick={() => {
+                    setImageFile(null)
+                    setImagePreview(null)
+                    setUploadedImageUrl('')
+                  }}
+                  title="Hapus gambar"
+                >
+                  <X size={18} />
+                </button>
               </div>
-              <div className="preview-actions">
+
+              <div className="preview-actions" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
                 <button
                   type="button"
                   className="btn btn--primary"
-                  onClick={handleUploadImage}
+                  onClick={handleConfirmImage}
                   disabled={uploading}
                 >
                   {uploading ? (
                     <>
-                      <Loader size={18} className="spin" /> Mengunggah ke Supabase Storage…
+                      <Loader size={18} className="spin" /> Memproses Gambar…
                     </>
                   ) : (
                     <>
                       <Upload size={18} /> Gunakan Foto Ini &amp; Lanjut ke Form Detail
                     </>
                   )}
+                </button>
+
+                <label
+                  htmlFor="furniture-image-input"
+                  className="btn btn--outline"
+                  style={{ cursor: 'pointer' }}
+                >
+                  <RefreshCw size={16} /> Ubah dengan Gambar Baru
+                </label>
+
+                <button
+                  type="button"
+                  className="btn btn--outline"
+                  onClick={() => {
+                    const currentIdx = PRESET_IMAGES.findIndex((p) => p.url === imagePreview)
+                    const nextPreset = PRESET_IMAGES[(currentIdx + 1) % PRESET_IMAGES.length]
+                    handleSelectPreset(nextPreset.url)
+                  }}
+                >
+                  Ganti Gambar Bawaan PWA
                 </button>
               </div>
             </div>
@@ -387,24 +432,22 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
               className="thumb-small"
             />
             <div className="thumb-info">
-              <span className="thumb-title">Foto Produk Terpilih</span>
-              <span className="thumb-sub">
-                {imageFile ? `File siap diunggah: ${imageFile.name}` : 'Siap ditampilkan di katalog utama'}
-              </span>
+              <span className="thumb-title">Foto Produk Terkonfirmasi</span>
+              <span className="thumb-sub">Siap ditampilkan di katalog utama</span>
             </div>
             <button
               type="button"
               className="btn btn--outline btn--sm"
               onClick={() => setCurrentStep('upload')}
             >
-              Ganti Foto
+              Ubah Gambar
             </button>
           </div>
 
           <div className="form-grid">
             <div className="form-group">
               <label className="form-label">
-                Nama Produk Furniture <span className="req">*</span>
+                Nama Produk Furnitur <span className="req">*</span>
               </label>
               <input
                 type="text"

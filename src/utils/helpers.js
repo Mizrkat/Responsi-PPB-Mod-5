@@ -52,9 +52,23 @@ export const averageRating = (reviews) => {
 /**
  * Menghasilkan link autentik yang dapat dibagikan untuk setiap item katalog
  */
+export const getPublicSiteOrigin = () => {
+  if (typeof window === 'undefined') return ''
+  const { protocol, hostname, port } = window.location
+  // Jika dibuka melalui link preview deployment Vercel (*-<hash>-*-projects.vercel.app)
+  // yang dilindungi Vercel SSO ("You Need Access"), otomatis arahkan ke domain produksi publik (<project>.vercel.app)
+  const vercelPreviewMatch = hostname.match(
+    /^([a-z0-9-]+?)-[a-z0-9]{8,12}-[a-z0-9-]+-projects\.vercel\.app$/i,
+  )
+  if (vercelPreviewMatch && vercelPreviewMatch[1]) {
+    return `${protocol}//${vercelPreviewMatch[1]}.vercel.app`
+  }
+  return `${protocol}//${hostname}${port ? `:${port}` : ''}`
+}
+
 export const getProductShareUrl = (itemId) => {
   if (typeof window === 'undefined') return `?produk=${encodeURIComponent(itemId)}`
-  const base = `${window.location.origin}${window.location.pathname}`
+  const base = `${getPublicSiteOrigin()}${window.location.pathname}`
   return `${base}?produk=${encodeURIComponent(itemId)}`
 }
 

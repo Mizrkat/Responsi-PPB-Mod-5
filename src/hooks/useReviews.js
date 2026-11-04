@@ -25,7 +25,15 @@ export function useReviews(furnitureId) {
     fetchReviews()
   }, [fetchReviews])
 
-  return { reviews, loading, refetch: fetchReviews }
+  const softDeleteReview = useCallback(
+    async (reviewId) => {
+      await reviewService.deleteReview(reviewId, furnitureId)
+      await fetchReviews()
+    },
+    [furnitureId, fetchReviews],
+  )
+
+  return { reviews, loading, refetch: fetchReviews, softDeleteReview }
 }
 
 export function useCreateReview() {

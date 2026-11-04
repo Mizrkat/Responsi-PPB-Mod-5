@@ -12,6 +12,7 @@ import {
   MessageCircle,
 } from 'lucide-react'
 import FavoriteButton from '../common/FavoriteButton'
+import ConfirmModal from '../modals/ConfirmModal'
 import { useReviews, useCreateReview } from '../../hooks/useReviews'
 import { useCart } from '../../hooks/useCart'
 import { getUserProfile } from '../../services/userService'
@@ -35,13 +36,20 @@ export default function FurnitureDetail({
   const material = furniture.material || furniture.caliber || 'Kayu Solid'
   const price = furniture.price ?? 0
 
-  const { reviews, loading: reviewsLoading, refetch: refetchReviews } = useReviews(furniture.id)
+  const {
+    reviews,
+    loading: reviewsLoading,
+    refetch: refetchReviews,
+    softDeleteReview,
+  } = useReviews(furniture.id)
   const { createReview, loading: submitting } = useCreateReview()
   const { addToCart } = useCart()
 
   const [rating, setRating] = useState(5)
   const [comment, setComment] = useState('')
   const [reviewSuccess, setReviewSuccess] = useState('')
+  const [reviewToDelete, setReviewToDelete] = useState(null)
+  const [deletingReview, setDeletingReview] = useState(false)
   const [copiedLink, setCopiedLink] = useState(false)
   const [addedMsg, setAddedMsg] = useState('')
 
@@ -83,6 +91,19 @@ export default function FurnitureDetail({
     setRating(5)
     refetchReviews()
     setTimeout(() => setReviewSuccess(''), 3000)
+  }
+
+  const handleConfirmDeleteReview = async () => {
+    if (!reviewToDelete) return
+    try {
+      setDeletingReview(true)
+      await softDeleteReview(reviewToDelete.id)
+      setReviewToDelete(null)
+      setReviewSuccess('Ulasan berhasil dihapus.')
+      setTimeout(() => setReviewSuccess(''), 3000)
+    } finally {
+      setDeletingReview(false)
+    }
   }
 
   return (
@@ -259,16 +280,26 @@ export default function FurnitureDetail({
               <li key={rev.id} className="review-item">
                 <div className="review-head">
                   <span className="review-user">{rev.user_identifier}</span>
-                  <span className="review-stars-display">
-                    {Array.from({ length: 5 }, (_, i) => (
-                      <Star
-                        key={i}
-                        size={14}
-                        fill={i < rev.rating ? 'var(--brass)' : 'none'}
-                        stroke={i < rev.rating ? 'var(--brass)' : 'var(--line)'}
-                      />
-                    ))}
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span className="review-stars-display">
+                      {Array.from({ length: 5 }, (_, i) => (
+                        <Star
+                          key={i}
+                          size={14}
+                          fill={i < rev.rating ? 'var(--brass)' : 'none'}
+                          stroke={i < rev.rating ? 'var(--brass)' : 'var(--line)'}
+                        />
+                      ))}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn--danger-ghost btn--sm"
+                      onClick={() => setReviewToDelete(rev)}
+                      title="Hapus Ulasan (Soft Delete)"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
                 <p className="review-comment">{rev.comment}</p>
               </li>
@@ -278,6 +309,18 @@ export default function FurnitureDetail({
           <p>Belum ada ulasan untuk produk ini.</p>
         )}
       </section>
+
+      <ConfirmModal
+        open={Boolean(reviewToDelete)}
+        title="Hapus Ulasan Pelanggan"
+        message={`Apakah Anda yakin ingin menghapus ulasan dari "${reviewToDelete?.user_identifier}"?`}
+        confirmLabel="Hapus Ulasan"
+        cancelLabel="Batal"
+        danger
+        loading={deletingReview}
+        onConfirm={handleConfirmDeleteReview}
+        onCancel={() => setReviewToDelete(null)}
+      />
     </div>
   )
 }

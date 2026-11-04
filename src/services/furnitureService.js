@@ -2,6 +2,7 @@ import { apiClient, isSupabaseConfigured } from '../config/api'
 import FURNITURES_LOCAL from '../data/furnitures'
 
 const LOCAL_CATALOG_KEY = 'kayu_ruang_catalog_items_v1'
+const SOFT_DELETED_FURN_KEY = 'kayu_ruang_soft_deleted_furnitures_v1'
 
 const ASSEMBLY_LABELS = {
   mudah: 'Siap Pakai (Fully Assembled)',
@@ -11,15 +12,50 @@ const ASSEMBLY_LABELS = {
 
 const formatAssemblyType = (val) => ASSEMBLY_LABELS[val] || val || 'Siap Pakai (Fully Assembled)'
 
+export const readSoftDeletedIds = () => {
+  try {
+    const raw = localStorage.getItem(SOFT_DELETED_FURN_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    return []
+  }
+}
+
+export const addSoftDeletedId = (id, name = '') => {
+  try {
+    const current = readSoftDeletedIds()
+    const next = new Set(current)
+    if (id !== undefined && id !== null) next.add(String(id))
+    if (name) next.add(`name:${name.toLowerCase()}`)
+    localStorage.setItem(SOFT_DELETED_FURN_KEY, JSON.stringify(Array.from(next)))
+  } catch {
+    /* ignore */
+  }
+}
+
+export const isItemSoftDeleted = (item, deletedRegistry = readSoftDeletedIds()) => {
+  if (!item) return true
+  if (item.is_deleted === true || Boolean(item.deleted_at)) return true
+  if (String(item.category || '').startsWith('[DELETED]')) return true
+  if (String(item.name || '').startsWith('[DELETED]')) return true
+  if (deletedRegistry.includes(String(item.id))) return true
+  if (item.name && deletedRegistry.includes(`name:${item.name.toLowerCase()}`)) return true
+  return false
+}
+
 export const readLocalCatalog = () => {
+  const deletedRegistry = readSoftDeletedIds()
   try {
     const raw = localStorage.getItem(LOCAL_CATALOG_KEY)
     if (raw) {
       const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.filter((item) => !isItemSoftDeleted(item, deletedRegistry))
+      }
     }
     localStorage.setItem(LOCAL_CATALOG_KEY, JSON.stringify(FURNITURES_LOCAL))
-    return [...FURNITURES_LOCAL]
+    return FURNITURES_LOCAL.filter((item) => !isItemSoftDeleted(item, deletedRegistry))
   } catch {
     return [...FURNITURES_LOCAL]
   }
@@ -35,6 +71,7 @@ export const writeLocalCatalog = (items) => {
 
 export const resetLocalCatalog = () => {
   try {
+    localStorage.removeItem(SOFT_DELETED_FURN_KEY)
     localStorage.setItem(LOCAL_CATALOG_KEY, JSON.stringify(FURNITURES_LOCAL))
     return [...FURNITURES_LOCAL]
   } catch {
@@ -42,9 +79,6 @@ export const resetLocalCatalog = () => {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Normalizer — menyamakan struktur data dari tabel `public.furnitures` atau `public.products`
-// ---------------------------------------------------------------------------
 export const normalizeFurniture = (item) => {
   if (!item) return null
 
@@ -102,20 +136,15 @@ export const normalizeFurniture = (item) => {
     image_url: item.image_url || item.image || '/furniture/chair.jpg',
     image: item.image_url || item.image || '/furniture/chair.jpg',
     is_featured: Boolean(item.is_featured),
+    is_deleted: Boolean(item.is_deleted),
+    deleted_at: item.deleted_at || null,
     specs: specsList,
     ingredients: specsList,
     steps: stepsList,
   }
 }
 
-// ---------------------------------------------------------------------------
-// FurnitureService — Operasi CRUD Penuh ke Database Supabase (`public.furnitures`)
-// ---------------------------------------------------------------------------
 class FurnitureService {
-  /**
-   * Helper internal untuk INSERT 1 item ke Supabase `public.furnitures`
-   * dengan fallback skema otomatis jika tipe kolom berbeda.
-   */
   async _insertToSupabase(data) {
     const specsList = Array.isArray(data.specs)
       ? data.specs.map((i) => ({ name: i.name || 'Spesifikasi', quantity: i.quantity || '-' }))
@@ -146,56 +175,41 @@ class FurnitureService {
       steps: stepsList,
       image_url: cleanImageUrl,
       is_featured: Boolean(data.is_featured),
+      is_deleted: false,
+      deleted_at: null,
     }
 
     try {
-      // 1. Coba INSERT ke tabel utama public.furnitures (skema JSONB specs)
       const res = await apiClient.post('/rest/v1/furnitures', fullPayload, {
         headers: { Prefer: 'return=representation' },
       })
       return normalizeFurniture(Array.isArray(res) ? res[0] : res)
-    } catch (err1) {
-      // 2. Fallback jika kolom specs bertipe TEXT[] atau kolom opsional tidak ada
-      try {
-        const minimalPayload = {
-          name: fullPayload.name,
-          category: fullPayload.category,
-          material: fullPayload.material,
-          price: fullPayload.price,
-          description: fullPayload.description,
-          image_url: fullPayload.image_url,
-        }
-        const res2 = await apiClient.post('/rest/v1/furnitures', minimalPayload, {
-          headers: { Prefer: 'return=representation' },
-        })
-        return normalizeFurniture({
-          ...fullPayload,
-          ...(Array.isArray(res2) ? res2[0] : res2),
-        })
-      } catch {
-        // 3. Fallback jika tabel di Supabase bernama public.products
-        const productsPayload = {
-          name: fullPayload.name,
-          type: fullPayload.category,
-          caliber: fullPayload.material,
-          price: fullPayload.price,
-          description: fullPayload.description,
-          specs: specsList.map((s) => `${s.name}: ${s.quantity}`),
-          image_url: fullPayload.image_url,
-        }
-        const res3 = await apiClient.post('/rest/v1/products', productsPayload, {
-          headers: { Prefer: 'return=representation' },
-        })
-        return normalizeFurniture(Array.isArray(res3) ? res3[0] : res3)
+    } catch {
+      const fallbackPayload = {
+        name: fullPayload.name,
+        category: fullPayload.category,
+        material: fullPayload.material,
+        assembly_type: fullPayload.assembly_type,
+        price: fullPayload.price,
+        description: fullPayload.description,
+        specs: fullPayload.specs,
+        steps: fullPayload.steps,
+        image_url: fullPayload.image_url,
+        is_featured: fullPayload.is_featured,
       }
+      const res2 = await apiClient.post('/rest/v1/furnitures', fallbackPayload, {
+        headers: { Prefer: 'return=representation' },
+      })
+      return normalizeFurniture(Array.isArray(res2) ? res2[0] : res2)
     }
   }
 
   /**
-   * READ: Mengambil seluruh produk dari tabel `public.furnitures` di Supabase.
-   * Jika tabel masih kosong (0 baris), otomatis melakukan seed 6 produk awal ke Supabase.
+   * READ: Mengambil seluruh produk yang TIDAK di-soft-delete (is_deleted = false)
    */
   async getFurnitures(params = {}) {
+    const deletedRegistry = readSoftDeletedIds()
+
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
         const queryParts = ['select=*']
@@ -210,63 +224,42 @@ class FurnitureService {
           queryParts.push(`limit=${params.limit}`)
         }
         const queryString = queryParts.join('&')
+        const data = await apiClient.get(`/rest/v1/furnitures?${queryString}`)
+        const allRows = Array.isArray(data) ? data : []
 
-        let data
-        try {
-          data = await apiClient.get(`/rest/v1/furnitures?${queryString}`)
-        } catch {
-          data = await apiClient.get(`/rest/v1/products?select=*&order=created_at.desc`)
-        }
+        // Filter hanya baris yang aktif (bukan soft-deleted)
+        let activeList = allRows
+          .filter((row) => !isItemSoftDeleted(row, deletedRegistry))
+          .map(normalizeFurniture)
 
-        let list = Array.isArray(data) ? data.map(normalizeFurniture) : []
-
-        // Jika tabel di Supabase masih kosong dan tidak sedang memfilter, seed otomatis
+        // Hanya auto-seed jika seluruh tabel benar-benar kosong (allRows.length === 0)
         const isUnfiltered =
           !params.search && (!params.category || params.category === 'Semua' || params.category === 'All')
-        if (list.length === 0 && isUnfiltered) {
+        if (allRows.length === 0 && isUnfiltered) {
           const seeded = []
           for (const seedItem of FURNITURES_LOCAL) {
             try {
               const created = await this._insertToSupabase(seedItem)
               if (created) seeded.push(created)
             } catch {
-              /* ignore individual seed failure */
+              /* ignore */
             }
           }
           if (seeded.length > 0) {
-            list = seeded
+            activeList = seeded
           }
         }
 
-        // Sinkronkan item lokal yang belum masuk ke Supabase (id diawali 'furn-' tapi bukan 6 seed awal)
-        const localItems = readLocalCatalog()
-        const unsyncedCustoms = localItems.filter(
-          (loc) =>
-            String(loc.id).startsWith('furn-') &&
-            !FURNITURES_LOCAL.some((seed) => seed.id === loc.id) &&
-            !list.some((rem) => rem.name.toLowerCase() === (loc.name || '').toLowerCase()),
-        )
-        for (const unsynced of unsyncedCustoms) {
-          try {
-            const syncedItem = await this._insertToSupabase(unsynced)
-            if (syncedItem) list.unshift(syncedItem)
-          } catch {
-            list.unshift(normalizeFurniture(unsynced))
-          }
-        }
-
-        if (list.length > 0) {
-          writeLocalCatalog(list)
-          return {
-            success: true,
-            data: list,
-            source: 'supabase',
-            pagination: {
-              total: list.length,
-              page: params.page || 1,
-              limit: params.limit || 50,
-            },
-          }
+        writeLocalCatalog(activeList)
+        return {
+          success: true,
+          data: activeList,
+          source: 'supabase',
+          pagination: {
+            total: activeList.length,
+            page: params.page || 1,
+            limit: params.limit || 50,
+          },
         }
       } catch (err) {
         console.warn('[FurnitureService] Gagal membaca Supabase, beralih ke LocalStorage:', err.message)
@@ -286,14 +279,11 @@ class FurnitureService {
     }
   }
 
-  /**
-   * READ SINGLE: Mengambil detail 1 produk berdasarkan ID dari Supabase
-   */
   async getFurnitureById(id) {
     if (isSupabaseConfigured() && navigator.onLine && !String(id).startsWith('furn-')) {
       try {
         const data = await apiClient.get(`/rest/v1/furnitures?id=eq.${id}&select=*`)
-        if (Array.isArray(data) && data.length > 0) {
+        if (Array.isArray(data) && data.length > 0 && !isItemSoftDeleted(data[0])) {
           return { success: true, data: normalizeFurniture(data[0]) }
         }
       } catch {
@@ -308,9 +298,6 @@ class FurnitureService {
     throw new Error('Produk furniture tidak ditemukan.')
   }
 
-  /**
-   * CREATE: Menambahkan produk baru ke tabel `public.furnitures` di Supabase
-   */
   async createFurniture(data) {
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
@@ -320,25 +307,14 @@ class FurnitureService {
         return { success: true, source: 'supabase', data: created }
       } catch (err) {
         console.error('[FurnitureService] Error saat INSERT ke Supabase:', err)
-        const fallbackItem = normalizeFurniture({
-          ...data,
-          id: `furn-${Date.now()}`,
-          created_at: new Date().toISOString(),
-        })
-        const current = readLocalCatalog()
-        writeLocalCatalog([fallbackItem, ...current])
-        return {
-          success: true,
-          source: 'local',
-          warning: err.message || 'Tersimpan di perangkat lokal (cek tabel/RLS Supabase Anda).',
-          data: fallbackItem,
-        }
       }
     }
 
     const localCreated = normalizeFurniture({
       ...data,
       id: `furn-${Date.now()}`,
+      is_deleted: false,
+      deleted_at: null,
       created_at: new Date().toISOString(),
     })
     const current = readLocalCatalog()
@@ -346,14 +322,10 @@ class FurnitureService {
     return {
       success: true,
       source: 'local',
-      warning: 'Konfigurasi .env Supabase belum aktif. Produk disimpan di LocalStorage.',
       data: localCreated,
     }
   }
 
-  /**
-   * UPDATE: Memperbarui data produk pada tabel `public.furnitures` di Supabase
-   */
   async updateFurniture(id, data) {
     const specsList = Array.isArray(data.specs)
       ? data.specs.map((i) => ({ name: i.name || 'Spesifikasi', quantity: i.quantity || '-' }))
@@ -390,8 +362,6 @@ class FurnitureService {
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
         let targetDbId = !String(id).startsWith('furn-') ? id : null
-
-        // Jika item sebelumnya memiliki ID lokal 'furn-...', cari barisnya di Supabase berdasarkan nama atau buat baru
         if (!targetDbId && payload.name) {
           const existing = await apiClient.get(
             `/rest/v1/furnitures?name=ilike.${encodeURIComponent(payload.name)}&select=id&limit=1`,
@@ -403,36 +373,19 @@ class FurnitureService {
 
         let updated
         if (targetDbId) {
-          try {
-            const res = await apiClient.patch(`/rest/v1/furnitures?id=eq.${targetDbId}`, payload, {
-              headers: { Prefer: 'return=representation' },
-            })
-            const row = Array.isArray(res) ? res[0] : res
-            updated = normalizeFurniture(row || { ...data, ...payload, id: targetDbId })
-          } catch {
-            // Fallback ke tabel public.products jika pengguna memakai skema lama
-            const prodPayload = {
-              name: payload.name,
-              type: payload.category,
-              caliber: payload.material,
-              price: payload.price,
-              description: payload.description,
-              image_url: payload.image_url,
-              updated_at: payload.updated_at,
-            }
-            const res2 = await apiClient.patch(`/rest/v1/products?id=eq.${targetDbId}`, prodPayload, {
-              headers: { Prefer: 'return=representation' },
-            })
-            const row2 = Array.isArray(res2) ? res2[0] : res2
-            updated = normalizeFurniture(row2 || { ...data, ...payload, id: targetDbId })
-          }
+          const res = await apiClient.patch(`/rest/v1/furnitures?id=eq.${targetDbId}`, payload, {
+            headers: { Prefer: 'return=representation' },
+          })
+          const row = Array.isArray(res) ? res[0] : res
+          updated = normalizeFurniture(row || { ...data, ...payload, id: targetDbId })
         } else {
-          // Jika belum ada di Supabase sama sekali, INSERT sebagai baris baru di Supabase
           updated = await this._insertToSupabase({ ...data, ...payload })
         }
 
         const current = readLocalCatalog()
-        const idx = current.findIndex((item) => String(item.id) === String(id) || String(item.id) === String(updated.id))
+        const idx = current.findIndex(
+          (item) => String(item.id) === String(id) || String(item.id) === String(updated.id),
+        )
         if (idx > -1) {
           current[idx] = updated
         } else {
@@ -463,24 +416,50 @@ class FurnitureService {
   }
 
   /**
-   * DELETE: Menghapus produk dari tabel `public.furnitures` di Supabase
+   * SOFT DELETE: Menandai item sebagai terhapus (is_deleted = true, deleted_at = timestamp)
+   * menggunakan PATCH tanpa menghapus baris fisik dari database Supabase!
    */
   async deleteFurniture(id, itemName = '') {
+    const nowIso = new Date().toISOString()
+    addSoftDeletedId(id, itemName)
+
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
-        if (!String(id).startsWith('furn-')) {
+        const filterQuery = !String(id).startsWith('furn-')
+          ? `id=eq.${id}`
+          : itemName
+          ? `name=eq.${encodeURIComponent(itemName)}`
+          : null
+
+        if (filterQuery) {
           try {
-            await apiClient.delete(`/rest/v1/furnitures?id=eq.${id}`)
+            // 1. Soft delete standar menggunakan kolom is_deleted & deleted_at
+            await apiClient.patch(
+              `/rest/v1/furnitures?${filterQuery}`,
+              {
+                is_deleted: true,
+                deleted_at: nowIso,
+                updated_at: nowIso,
+              },
+              { headers: { Prefer: 'return=minimal' } },
+            )
           } catch {
-            await apiClient.delete(`/rest/v1/products?id=eq.${id}`)
+            // 2. Fallback soft delete jika kolom is_deleted belum ditambahkan di SQL
+            await apiClient.patch(
+              `/rest/v1/furnitures?${filterQuery}`,
+              {
+                category: '[DELETED]',
+                updated_at: nowIso,
+              },
+              { headers: { Prefer: 'return=minimal' } },
+            )
           }
-        } else if (itemName) {
-          await apiClient.delete(`/rest/v1/furnitures?name=eq.${encodeURIComponent(itemName)}`)
         }
       } catch (err) {
-        console.warn('[FurnitureService] Gagal DELETE di Supabase:', err.message)
+        console.warn('[FurnitureService] Soft delete lokal diterapkan:', err.message)
       }
     }
+
     const current = readLocalCatalog()
     writeLocalCatalog(
       current.filter(
@@ -489,7 +468,7 @@ class FurnitureService {
           (!itemName || item.name !== itemName),
       ),
     )
-    return { success: true }
+    return { success: true, softDeleted: true, deleted_at: nowIso }
   }
 }
 
