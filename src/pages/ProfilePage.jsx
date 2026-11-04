@@ -1,18 +1,20 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   User,
   Copy,
   Check,
   Save,
   Heart,
-  FileText,
   Camera,
   Play,
   Package,
+  Database,
+  RefreshCw,
+  Loader,
 } from 'lucide-react'
 import userService from '../services/userService'
 import { useFavorites } from '../hooks/useFavorites'
-import { readLocalCatalog } from '../services/furnitureService'
+import { useFurnitures } from '../hooks/useFurnitures'
 
 export default function ProfilePage({ onReplaySplash }) {
   const [profile, setProfile] = useState(() => userService.getUserProfile())
@@ -21,51 +23,98 @@ export default function ProfilePage({ onReplaySplash }) {
   const [kelompok, setKelompok] = useState(profile.kelompok || '')
   const [prodi, setProdi] = useState(profile.prodi || '')
   const [bio, setBio] = useState(profile.bio || '')
-  const [avatar, setAvatar] = useState(profile.avatar || null)
+  const [avatar, setAvatar] = useState(profile.avatar_url || profile.avatar || null)
+
+  const [loadingProfile, setLoadingProfile] = useState(true)
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
+  const [dataSource, setDataSource] = useState('local')
   const [copied, setCopied] = useState(false)
   const [feedback, setFeedback] = useState('')
 
   const { favorites } = useFavorites()
-  const catalogCount = readLocalCatalog().length
+  const { furnitures } = useFurnitures({ limit: 100 })
+
+  const loadProfileFromDb = async () => {
+    try {
+      setLoadingProfile(true)
+      const res = await userService.fetchProfileFromSupabase()
+      if (res.success && res.data) {
+        setProfile(res.data)
+        setUsername(res.data.username || '')
+        setNim(res.data.nim || '')
+        setKelompok(res.data.kelompok || '')
+        setProdi(res.data.prodi || '')
+        setBio(res.data.bio || '')
+        setAvatar(res.data.avatar_url || res.data.avatar || null)
+        setDataSource(res.source || 'local')
+      }
+    } finally {
+      setLoadingProfile(false)
+    }
+  }
+
+  useEffect(() => {
+    loadProfileFromDb()
+  }, [])
 
   const handleCopyId = () => {
     if (profile.userId) {
-      navigator.clipboard.writeText(profile.userId)
+      navigator.clipboard?.writeText(profile.userId)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }
   }
 
-  const handleAvatarChange = (e) => {
-    const file = e.target.files[0]
+  const handleAvatarChange = async (e) => {
+    const file = e.target.files?.[0]
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const base64 = event.target.result
-      setAvatar(base64)
-      userService.updateAvatar(base64)
-      setFeedback('Foto profil berhasil diperbarui.')
-      setTimeout(() => setFeedback(''), 3000)
+    try {
+      setUploadingAvatar(true)
+      const res = await userService.uploadAvatarToSupabase(file)
+      if (res.success) {
+        setAvatar(res.avatarUrl)
+        setProfile(res.profile)
+        setFeedback(
+          res.source === 'supabase_storage'
+            ? 'Foto profil berhasil diunggah ke Supabase Storage Bucket & disimpan di tabel public.profiles!'
+            : 'Foto profil berhasil diperbarui (tersimpan secara lokal).',
+        )
+        setTimeout(() => setFeedback(''), 4000)
+      }
+    } catch (err) {
+      setFeedback(err.message || 'Gagal mengunggah foto profil.')
+    } finally {
+      setUploadingAvatar(false)
     }
-    reader.readAsDataURL(file)
   }
 
-  const handleSaveProfile = (e) => {
+  const handleSaveProfile = async (e) => {
     e.preventDefault()
-    const updated = {
-      ...profile,
-      username: username.trim() || 'Mahasiswa Praktikan',
-      nim: nim.trim() || '21120123140001',
-      kelompok: kelompok.trim() || 'Kelompok 05',
-      prodi: prodi.trim(),
-      bio: bio.trim(),
-      avatar,
-    }
-    const result = userService.saveUserProfile(updated)
-    if (result.success) {
-      setProfile(result.data)
-      setFeedback('Identitas profil praktikan (Nama, NIM, Kelompok) berhasil disimpan!')
-      setTimeout(() => setFeedback(''), 3500)
+    try {
+      setSavingProfile(true)
+      const updated = {
+        ...profile,
+        username: username.trim() || 'Mahasiswa Praktikan',
+        nim: nim.trim() || '21120123140001',
+        kelompok: kelompok.trim() || 'Kelompok 05',
+        prodi: prodi.trim(),
+        bio: bio.trim(),
+        avatar_url: avatar,
+      }
+      const result = await userService.saveProfileToSupabase(updated)
+      if (result.success) {
+        setProfile(result.data)
+        setDataSource(result.source || 'local')
+        setFeedback(
+          result.source === 'supabase'
+            ? 'Data profil akun berhasil disimpan ke tabel Supabase public.profiles!'
+            : 'Data profil akun disimpan ke penyimpanan lokal (LocalStorage).',
+        )
+        setTimeout(() => setFeedback(''), 4000)
+      }
+    } finally {
+      setSavingProfile(false)
     }
   }
 
@@ -82,20 +131,30 @@ export default function ProfilePage({ onReplaySplash }) {
         }}
       >
         <div>
-          <h1 className="display">Profil Praktikan</h1>
+          <h1 className="display">Profil Akun Praktikan</h1>
           <p className="lede">
-            Halaman identitas pembuat aplikasi PWA (Nama, NIM, dan Kelompok) sesuai syarat tugas Praktikum Pemrograman Perangkat Bergerak Modul 5.
+            Terhubung ke tabel <code>public.profiles</code> dan Storage Bucket <code>avatars</code> / <code>furnitures</code> di Supabase.
           </p>
         </div>
-        {onReplaySplash && (
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           <button
             type="button"
             className="btn btn--outline btn--sm"
-            onClick={onReplaySplash}
+            onClick={loadProfileFromDb}
+            disabled={loadingProfile}
           >
-            <Play size={14} /> Putar Ulang Splash Screen
+            <RefreshCw size={14} className={loadingProfile ? 'spin' : ''} /> Muat dari Supabase
           </button>
-        )}
+          {onReplaySplash && (
+            <button
+              type="button"
+              className="btn btn--outline btn--sm"
+              onClick={onReplaySplash}
+            >
+              <Play size={14} /> Putar Splash Screen
+            </button>
+          )}
+        </div>
       </section>
 
       {feedback && (
@@ -114,14 +173,19 @@ export default function ProfilePage({ onReplaySplash }) {
                 <User size={36} stroke="var(--brass)" />
               </div>
             )}
-            <label htmlFor="avatar-file-input" className="avatar-upload-btn" title="Unggah Foto">
-              <Camera size={14} />
+            <label
+              htmlFor="avatar-file-input"
+              className="avatar-upload-btn"
+              title="Unggah Foto ke Supabase Storage Bucket"
+            >
+              {uploadingAvatar ? <Loader size={14} className="spin" /> : <Camera size={14} />}
               <input
                 id="avatar-file-input"
                 type="file"
                 accept="image/*"
                 onChange={handleAvatarChange}
                 className="hidden-file-input"
+                disabled={uploadingAvatar}
               />
             </label>
           </div>
@@ -131,8 +195,11 @@ export default function ProfilePage({ onReplaySplash }) {
             <p style={{ margin: '0 0 6px', fontWeight: 600, color: 'var(--brass)' }}>
               NIM: {profile.nim} · {profile.kelompok}
             </p>
-            <div className="profile-id-row">
-              <span className="mono-badge">UUID: {profile.userId}</span>
+            <p style={{ margin: '0 0 8px', fontSize: '0.88rem', color: 'var(--steel)' }}>
+              {profile.prodi}
+            </p>
+            <div className="profile-id-row" style={{ flexWrap: 'wrap' }}>
+              <span className="mono-badge">user_id: {profile.userId}</span>
               <button
                 type="button"
                 className="icon-btn"
@@ -141,6 +208,9 @@ export default function ProfilePage({ onReplaySplash }) {
               >
                 {copied ? <Check size={14} color="var(--brass)" /> : <Copy size={14} />}
               </button>
+              <span className="mono-badge" style={{ color: dataSource === 'supabase' ? '#1e8449' : 'var(--steel)' }}>
+                Sumber: {dataSource === 'supabase' ? 'Supabase (public.profiles)' : 'LocalStorage Cache'}
+              </span>
             </div>
           </div>
         </div>
@@ -148,28 +218,30 @@ export default function ProfilePage({ onReplaySplash }) {
         <div className="profile-stats" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
           <div className="stat-item">
             <Package size={20} stroke="var(--brass)" />
-            <div className="stat-val">{catalogCount}</div>
-            <div className="stat-label">Produk di Katalog</div>
+            <div className="stat-val">{furnitures.length}</div>
+            <div className="stat-label">Tabel public.furnitures</div>
           </div>
           <div className="stat-item">
             <Heart size={20} stroke="var(--brass)" />
             <div className="stat-val">{favorites.length}</div>
-            <div className="stat-label">Furniture Favorit</div>
+            <div className="stat-label">Tabel public.favorites</div>
           </div>
           <div className="stat-item">
-            <FileText size={20} stroke="var(--steel)" />
-            <div className="stat-val">PWA Ready</div>
-            <div className="stat-label">Offline &amp; Installable</div>
+            <Database size={20} stroke="var(--brass)" />
+            <div className="stat-val">Aktif</div>
+            <div className="stat-label">Tabel public.profiles</div>
           </div>
         </div>
       </div>
 
       <form onSubmit={handleSaveProfile} className="profile-form">
-        <h3 className="section-title">Edit Data Praktikan (Nama, NIM, Kelompok)</h3>
+        <h3 className="section-title">
+          Edit Data Tabel <code>public.profiles</code> (Nama, NIM, Kelompok)
+        </h3>
 
         <div className="form-grid">
           <div className="form-group">
-            <label className="form-label">Nama Lengkap *</label>
+            <label className="form-label">Nama Lengkap (username) *</label>
             <input
               type="text"
               value={username}
@@ -219,7 +291,7 @@ export default function ProfilePage({ onReplaySplash }) {
         </div>
 
         <div className="form-group">
-          <label className="form-label">Catatan / Deskripsi Proyek</label>
+          <label className="form-label">Bio / Deskripsi Proyek</label>
           <textarea
             value={bio}
             onChange={(e) => setBio(e.target.value)}
@@ -228,8 +300,21 @@ export default function ProfilePage({ onReplaySplash }) {
           />
         </div>
 
-        <button type="submit" className="btn btn--primary" style={{ alignSelf: 'flex-start' }}>
-          <Save size={16} /> Simpan Data Profil
+        {avatar && String(avatar).startsWith('http') && (
+          <div className="form-group">
+            <label className="form-label">URL Avatar di Supabase Storage Bucket</label>
+            <input type="text" value={avatar} readOnly className="form-input" />
+          </div>
+        )}
+
+        <button
+          type="submit"
+          className="btn btn--primary"
+          style={{ alignSelf: 'flex-start' }}
+          disabled={savingProfile}
+        >
+          <Save size={16} />{' '}
+          {savingProfile ? 'Menyimpan ke Supabase…' : 'Simpan ke Tabel public.profiles'}
         </button>
       </form>
     </div>

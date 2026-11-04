@@ -1,5 +1,5 @@
 import { apiClient, IS_SUPABASE } from '../config/api'
-import { normalizeProduct } from './furnitureService'
+import { normalizeFurniture } from './furnitureService'
 
 const LOCAL_FAV_KEY = 'kayu_ruang_favorites_v1'
 
@@ -21,37 +21,71 @@ export const writeLocalFavs = (ids) => {
 }
 
 class FavoriteService {
+  /**
+   * Mengambil seluruh produk favorit milik user dari `public.favorites`
+   */
   async getFavorites(userIdentifier) {
-    const localIds = readLocalFavs()
     if (IS_SUPABASE && navigator.onLine) {
       try {
         const data = await apiClient.get(
-          `/rest/v1/favorites?user_id=eq.${userIdentifier}&select=product_id,created_at,products(*)`,
+          `/rest/v1/favorites?user_id=eq.${userIdentifier}&select=furniture_id,created_at,furnitures(*)`,
         )
-        if (Array.isArray(data) && data.length > 0) {
+        if (Array.isArray(data)) {
           const list = data.map((fav) => {
-            const prod = fav.products ? normalizeProduct(fav.products) : null
+            const prod = fav.furnitures ? normalizeFurniture(fav.furnitures) : null
             return {
               ...(prod || {}),
-              id: fav.product_id,
-              product_id: fav.product_id,
+              id: fav.furniture_id,
+              furniture_id: fav.furniture_id,
               created_at: fav.created_at,
             }
           })
           return { success: true, data: list }
         }
       } catch {
-        // Fallback ke localStorage
+        /* fallback ke localStorage */
       }
     }
+
+    const localIds = readLocalFavs()
     return {
       success: true,
-      data: localIds.map((id) => ({ id, product_id: id })),
+      data: localIds.map((id) => ({ id, furniture_id: id })),
     }
   }
 
+  /**
+   * Menambah / menghapus favorit pada `public.favorites`
+   */
   async toggleFavorite(data) {
-    const targetId = String(data.recipe_id || data.furniture_id || data.id)
+    const rawId = data.furniture_id || data.id
+    const userId = data.user_identifier
+
+    if (IS_SUPABASE && navigator.onLine && !String(rawId).startsWith('furn-') && userId) {
+      try {
+        const targetId = Number(rawId)
+        const existing = await apiClient.get(
+          `/rest/v1/favorites?furniture_id=eq.${targetId}&user_id=eq.${userId}&select=*`,
+        )
+        if (Array.isArray(existing) && existing.length > 0) {
+          await apiClient.delete(
+            `/rest/v1/favorites?furniture_id=eq.${targetId}&user_id=eq.${userId}`,
+          )
+          return { success: true, data: { is_favorited: false } }
+        } else {
+          await apiClient.post(
+            '/rest/v1/favorites',
+            { furniture_id: targetId, user_id: userId },
+            { headers: { Prefer: 'return=minimal' } },
+          )
+          return { success: true, data: { is_favorited: true } }
+        }
+      } catch {
+        /* fallback ke localStorage */
+      }
+    }
+
+    const targetId = String(rawId)
     const current = readLocalFavs().map(String)
     const idx = current.indexOf(targetId)
     let isFavorited = false

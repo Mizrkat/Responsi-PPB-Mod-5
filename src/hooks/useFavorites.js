@@ -15,7 +15,7 @@ export function useFavorites() {
         setFavorites(response.data || [])
       }
     } catch {
-      setFavorites(readLocalFavs().map((id) => ({ id })))
+      setFavorites(readLocalFavs().map((id) => ({ id, furniture_id: id })))
     } finally {
       setLoading(false)
     }
@@ -33,14 +33,21 @@ export function useFavorites() {
 
 export function useIsFavorited(furnitureId) {
   const { favorites, loading, refetch } = useFavorites()
+  const userIdentifier = getUserIdentifier()
 
   const isFavorited = favorites.some((fav) => {
-    const favId = typeof fav === 'object' && fav !== null ? fav.id ?? fav.product_id : fav
+    const favId =
+      typeof fav === 'object' && fav !== null
+        ? fav.id ?? fav.furniture_id ?? fav.product_id
+        : fav
     return String(favId) === String(furnitureId)
   })
 
   const toggleFavorite = async () => {
-    const res = await favoriteService.toggleFavorite({ id: furnitureId })
+    const res = await favoriteService.toggleFavorite({
+      furniture_id: furnitureId,
+      user_identifier: userIdentifier,
+    })
     await refetch()
     window.dispatchEvent(new CustomEvent('favorites-updated'))
     return res.data

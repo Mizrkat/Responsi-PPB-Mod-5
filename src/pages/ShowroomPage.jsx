@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   MapPin,
   Clock,
@@ -7,76 +7,183 @@ import {
   Hammer,
   Database,
   RefreshCw,
-  Key,
-  Copy,
-  Check,
+  FolderOpen,
 } from 'lucide-react'
-import {
-  getActiveEnvConfig,
-  saveActiveEnvConfig,
-  resetActiveEnvConfig,
-} from '../config/api'
-import furnitureService from '../services/furnitureService'
-import FURNITURES_LOCAL from '../data/furnitures'
+import { apiClient, BASE_URL, IS_SUPABASE } from '../config/api'
+import { useFurnitures } from '../hooks/useFurnitures'
+import { useFavorites } from '../hooks/useFavorites'
+import userService from '../services/userService'
+import uploadService from '../services/uploadService'
+import { formatPrice } from '../utils/helpers'
 
 export default function ShowroomPage() {
-  const [envForm, setEnvForm] = useState(() => getActiveEnvConfig())
-  const [statusMsg, setStatusMsg] = useState(
-    'Terhubung dengan konfigurasi .env Supabase (Dual-Mode: Supabase PostgREST + LocalStorage).',
-  )
-  const [syncing, setSyncing] = useState(false)
-  const [copiedEnv, setCopiedEnv] = useState(false)
+  const { furnitures, source: furnSource, refetch: refetchFurnitures } = useFurnitures({ limit: 50 })
+  const { favorites, refetch: refetchFavorites } = useFavorites()
+  const [profilesList, setProfilesList] = useState([])
+  const [reviewsList, setReviewsList] = useState([])
+  const [bucketFiles, setBucketFiles] = useState([])
+  const [loadingDb, setLoadingDb] = useState(false)
 
-  const handleSaveEnv = (e) => {
-    e.preventDefault()
-    saveActiveEnvConfig(envForm)
-    setStatusMsg(`Konfigurasi .env diperbarui ke: ${envForm.VITE_API_BASE_URL}`)
-  }
-
-  const handleTestConnection = async () => {
+  const fetchAllTables = async () => {
+    setLoadingDb(true)
     try {
-      setSyncing(true)
-      const res = await furnitureService.getFurnitures({ limit: 50 })
-      setStatusMsg(
-        `Koneksi berhasil! Ditemukan ${res.data?.length || 0} produk terintegrasi (Mode: ${res.source || 'hybrid'}).`,
-      )
-    } catch (err) {
-      setStatusMsg(`Fallback LocalStorage Aktif: ${err.message}`)
-    } finally {
-      setSyncing(false)
-    }
-  }
+      await refetchFurnitures()
+      await refetchFavorites()
 
-  const handleSeedSupabase = async () => {
-    try {
-      setSyncing(true)
-      let count = 0
-      for (const item of FURNITURES_LOCAL) {
-        await furnitureService.createFurniture(item)
-        count++
+      if (IS_SUPABASE && navigator.onLine) {
+        try {
+          const profs = await apiClient.get('/rest/v1/profiles?select=*&order=updated_at.desc&limit=20')
+          if (Array.isArray(profs)) setProfilesList(profs)
+        } catch {
+          setProfilesList([userService.getUserProfile()])
+        }
+
+        try {
+          const revs = await apiClient.get('/rest/v1/reviews?select=*&order=created_at.desc&limit=20')
+          if (Array.isArray(revs)) setReviewsList(revs)
+        } catch {
+          setReviewsList([])
+        }
+
+        const storageRes = await uploadService.listFiles('furnitures', 'products')
+        if (storageRes.success) {
+          setBucketFiles(storageRes.data || [])
+        }
+      } else {
+        setProfilesList([userService.getUserProfile()])
       }
-      setStatusMsg(`Berhasil menyinkronkan ${count} produk furniture ke database Supabase!`)
-    } catch (err) {
-      setStatusMsg(`Gagal seed ke server: ${err.message}`)
     } finally {
-      setSyncing(false)
+      setLoadingDb(false)
     }
   }
 
-  const handleCopyEnv = () => {
-    const content = `VITE_API_BASE_URL=${envForm.VITE_API_BASE_URL}\nVITE_SUPABASE_PUBLISHABLE_KEY=${envForm.VITE_SUPABASE_PUBLISHABLE_KEY}\nVITE_SUPABASE_BUCKET=${envForm.VITE_SUPABASE_BUCKET || 'guns'}`
-    navigator.clipboard?.writeText(content)
-    setCopiedEnv(true)
-    setTimeout(() => setCopiedEnv(false), 2000)
-  }
+  useEffect(() => {
+    fetchAllTables()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div className="page">
-      <h1 className="display">Showroom &amp; Konfigurasi Database Supabase (.env)</h1>
-      <p className="lede" style={{ marginBottom: 28 }}>
-        Informasi galeri fisik Kayu &amp; Ruang di Semarang &amp; Jepara, serta manajemen integrasi environment database Supabase.
-      </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12, marginBottom: 24 }}>
+        <div>
+          <h1 className="display">Showroom &amp; Data Tabel Supabase</h1>
+          <p className="lede">
+            Menampilkan isi langsung dari tabel-tabel database Supabase (<code>public.furnitures</code>, <code>public.profiles</code>, <code>public.favorites</code>, <code>public.reviews</code>) serta Storage Bucket <code>furnitures</code>.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn btn--primary btn--sm"
+          onClick={fetchAllTables}
+          disabled={loadingDb}
+        >
+          <RefreshCw size={14} className={loadingDb ? 'spin' : ''} /> Segarkan Tabel Supabase
+        </button>
+      </div>
 
+      {/* Ringkasan Tabel Supabase */}
+      <div className="card-box">
+        <h3 className="card-box-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Database size={18} color="var(--brass)" /> Status Koneksi &amp; Isi Tabel Database Supabase
+        </h3>
+        <p className="card-box-desc" style={{ marginBottom: 14 }}>
+          Endpoint Aktif:{' '}
+          <strong>
+            {IS_SUPABASE ? BASE_URL : 'Mode Penyimpanan Lokal (Isi .env untuk koneksi cloud)'}
+          </strong>{' '}
+          ({furnSource === 'supabase' ? 'Terhubung ke Supabase' : 'LocalStorage Fallback'})
+        </p>
+
+        {/* Tabel 1: public.profiles */}
+        <h4 style={{ margin: '16px 0 8px', fontSize: '0.95rem' }}>
+          1. Isi Tabel <code>public.profiles</code> ({profilesList.length} Baris)
+        </h4>
+        <div style={{ overflowX: 'auto', marginBottom: 20 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+            <thead>
+              <tr style={{ background: 'var(--paper)', textAlign: 'left', borderBottom: '2px solid var(--line)' }}>
+                <th style={{ padding: '8px 10px' }}>Nama (username)</th>
+                <th style={{ padding: '8px 10px' }}>NIM</th>
+                <th style={{ padding: '8px 10px' }}>Kelompok</th>
+                <th style={{ padding: '8px 10px' }}>Prodi</th>
+              </tr>
+            </thead>
+            <tbody>
+              {profilesList.map((p, idx) => (
+                <tr key={p.id || idx} style={{ borderBottom: '1px solid var(--line)' }}>
+                  <td style={{ padding: '8px 10px', fontWeight: 600 }}>{p.username}</td>
+                  <td style={{ padding: '8px 10px' }}>{p.nim}</td>
+                  <td style={{ padding: '8px 10px' }}>{p.kelompok}</td>
+                  <td style={{ padding: '8px 10px' }}>{p.prodi}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Tabel 2: public.furnitures */}
+        <h4 style={{ margin: '16px 0 8px', fontSize: '0.95rem' }}>
+          2. Isi Tabel <code>public.furnitures</code> ({furnitures.length} Baris)
+        </h4>
+        <div style={{ overflowX: 'auto', marginBottom: 20 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+            <thead>
+              <tr style={{ background: 'var(--paper)', textAlign: 'left', borderBottom: '2px solid var(--line)' }}>
+                <th style={{ padding: '8px 10px' }}>ID</th>
+                <th style={{ padding: '8px 10px' }}>Nama Produk</th>
+                <th style={{ padding: '8px 10px' }}>Kategori</th>
+                <th style={{ padding: '8px 10px' }}>Material</th>
+                <th style={{ padding: '8px 10px', textAlign: 'right' }}>Harga</th>
+              </tr>
+            </thead>
+            <tbody>
+              {furnitures.map((f) => (
+                <tr key={f.id} style={{ borderBottom: '1px solid var(--line)' }}>
+                  <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>{f.id}</td>
+                  <td style={{ padding: '8px 10px', fontWeight: 600 }}>{f.name}</td>
+                  <td style={{ padding: '8px 10px' }}>{f.category || f.type}</td>
+                  <td style={{ padding: '8px 10px' }}>{f.material || f.caliber}</td>
+                  <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 600, color: 'var(--brass)' }}>
+                    {formatPrice(f.price)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Statistik Tabel Favorites, Reviews & Storage Bucket */}
+        <ul className="detail-specs">
+          <li>
+            <strong>Tabel <code>public.favorites</code>:</strong> {favorites.length} item tersimpan
+          </li>
+          <li>
+            <strong>Tabel <code>public.reviews</code>:</strong> {reviewsList.length} ulasan pelanggan
+          </li>
+          <li>
+            <strong>Storage Bucket <code>furnitures</code>:</strong> {bucketFiles.length} file gambar terunggah
+          </li>
+        </ul>
+
+        {bucketFiles.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <h4 style={{ margin: '0 0 8px', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <FolderOpen size={15} color="var(--brass)" /> File di Supabase Storage Bucket (<code>furnitures/products</code>):
+            </h4>
+            <ul className="detail-specs">
+              {bucketFiles.slice(0, 6).map((file, i) => (
+                <li key={i}>
+                  <a href={file.publicUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--brass)', fontWeight: 600 }}>
+                    {file.name}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {/* Lokasi Showroom */}
       <div className="form-grid" style={{ marginBottom: 24 }}>
         <div className="card-box" style={{ marginBottom: 0 }}>
           <h3 className="card-box-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -105,90 +212,22 @@ export default function ShowroomPage() {
         </div>
       </div>
 
-      {/* Panel Konfigurasi .env & Supabase */}
-      <div className="card-box">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
-          <div>
-            <h3 className="card-box-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Database size={18} color="var(--brass)" /> Environment (.env) &amp; Koneksi Supabase REST API
-            </h3>
-            <p style={{ fontSize: '0.85rem', color: 'var(--steel)', margin: 0 }}>{statusMsg}</p>
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button type="button" className="btn btn--outline btn--sm" onClick={handleTestConnection} disabled={syncing}>
-              <RefreshCw size={14} className={syncing ? 'spin' : ''} /> Uji Koneksi Supabase
-            </button>
-            <button type="button" className="btn btn--primary btn--sm" onClick={handleSeedSupabase} disabled={syncing}>
-              <Database size={14} /> Seed 6 Produk ke Supabase
-            </button>
-          </div>
-        </div>
-
-        <form onSubmit={handleSaveEnv} className="entry-form">
-          <div className="form-grid">
-            <div className="form-group">
-              <label className="form-label">VITE_API_BASE_URL</label>
-              <input
-                type="url"
-                className="form-input"
-                value={envForm.VITE_API_BASE_URL}
-                onChange={(e) => setEnvForm((p) => ({ ...p, VITE_API_BASE_URL: e.target.value }))}
-                required
-              />
-            </div>
-            <div className="form-group">
-              <label className="form-label">VITE_SUPABASE_PUBLISHABLE_KEY</label>
-              <input
-                type="text"
-                className="form-input"
-                value={envForm.VITE_SUPABASE_PUBLISHABLE_KEY}
-                onChange={(e) => setEnvForm((p) => ({ ...p, VITE_SUPABASE_PUBLISHABLE_KEY: e.target.value }))}
-                required
-              />
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button type="submit" className="btn btn--primary btn--sm">
-                <Key size={14} /> Simpan &amp; Terapkan .env
-              </button>
-              <button
-                type="button"
-                className="btn btn--outline btn--sm"
-                onClick={() => {
-                  const def = resetActiveEnvConfig()
-                  setEnvForm(def)
-                  setStatusMsg('Dikembalikan ke konfigurasi .env default Modul 5.')
-                }}
-              >
-                Reset Default
-              </button>
-            </div>
-
-            <button type="button" className="btn btn--outline btn--sm" onClick={handleCopyEnv}>
-              {copiedEnv ? <Check size={14} /> : <Copy size={14} />} Salin Isi File .env
-            </button>
-          </div>
-        </form>
-      </div>
-
       <div className="card-box">
         <h3 className="card-box-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <ShieldCheck size={18} color="var(--brass)" /> Keunggulan Arsitektur PWA Kayu &amp; Ruang
+          <ShieldCheck size={18} color="var(--brass)" /> Arsitektur Database &amp; Storage PWA
         </h3>
         <ul className="detail-specs" style={{ marginTop: 14 }}>
           <li>
-            <strong>Supabase PostgREST Integration:</strong> Terhubung langsung ke tabel <code>public.products</code>, <code>public.favorites</code>, dan <code>public.reviews</code> melalui Axios Interceptor.
+            <strong>4 Tabel Relasional Supabase:</strong> <code>furnitures</code>, <code>profiles</code>, <code>favorites</code>, dan <code>reviews</code>.
           </li>
           <li>
-            <strong>Offline-First Fallback:</strong> Service Worker Workbox &amp; LocalStorage menjaga katalog dan CRUD tetap berjalan meskipun tanpa koneksi internet.
+            <strong>Supabase Storage Bucket:</strong> Setiap foto produk dan foto profil yang diunggah disimpan langsung ke bucket <code>furnitures</code> &amp; <code>avatars</code>.
           </li>
           <li>
-            <strong>Full CRUD Fungsional:</strong> Tambah produk furniture baru, unggah foto, edit spesifikasi dimensi, dan hapus item secara interaktif.
+            <strong>Full CRUD Fungsional:</strong> Tambah, tampilkan, ubah, dan hapus data langsung tercermin pada tabel database.
           </li>
           <li>
-            <strong>SQL Schema Ready:</strong> Tersedia file <code>supabase/schema.sql</code> di dalam proyek untuk inisialisasi tabel dan kebijakan RLS secara instan.
+            <strong>Offline-First PWA:</strong> Tetap bekerja secara offline dengan sinkronisasi cache otomatis.
           </li>
         </ul>
       </div>
