@@ -3,6 +3,7 @@ import reviewService from '../services/reviewService'
 
 export function useReviews(furnitureId) {
   const [reviews, setReviews] = useState([])
+  const [deletedReviews, setDeletedReviews] = useState([])
   const [loading, setLoading] = useState(true)
 
   const fetchReviews = useCallback(async () => {
@@ -15,6 +16,7 @@ export function useReviews(furnitureId) {
       const res = await reviewService.getReviews(furnitureId)
       if (res.success) {
         setReviews(res.data || [])
+        setDeletedReviews(res.deletedData || [])
       }
     } finally {
       setLoading(false)
@@ -26,14 +28,38 @@ export function useReviews(furnitureId) {
   }, [fetchReviews])
 
   const softDeleteReview = useCallback(
-    async (reviewId) => {
-      await reviewService.deleteReview(reviewId, furnitureId)
+    async (reviewObj) => {
+      await reviewService.deleteReview(reviewObj.id, furnitureId, reviewObj)
       await fetchReviews()
     },
     [furnitureId, fetchReviews],
   )
 
-  return { reviews, loading, refetch: fetchReviews, softDeleteReview }
+  const restoreReview = useCallback(
+    async (reviewObj) => {
+      await reviewService.restoreReview(reviewObj, furnitureId)
+      await fetchReviews()
+    },
+    [furnitureId, fetchReviews],
+  )
+
+  const hardDeleteReview = useCallback(
+    async (reviewId) => {
+      await reviewService.hardDeleteReview(reviewId, furnitureId)
+      await fetchReviews()
+    },
+    [furnitureId, fetchReviews],
+  )
+
+  return {
+    reviews,
+    deletedReviews,
+    loading,
+    refetch: fetchReviews,
+    softDeleteReview,
+    restoreReview,
+    hardDeleteReview,
+  }
 }
 
 export function useCreateReview() {

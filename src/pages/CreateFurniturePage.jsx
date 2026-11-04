@@ -44,8 +44,6 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
     is_featured: false,
   })
 
-  // Mulai dengan null agar saat pengguna mengunggah gambar baru / memilih preset,
-  // gambar baru langsung muncul beserta tombol konfirmasi dan tombol ubah gambar (seperti Gambar 2)
   const [imageFile, setImageFile] = useState(null)
   const [imagePreview, setImagePreview] = useState(null)
   const [uploadedImageUrl, setUploadedImageUrl] = useState('')
@@ -116,7 +114,6 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
     setDraftTimestamp(null)
   }
 
-  // Saat pilih file baru dari perangkat, langsung tampilkan pratinjau gambar barunya di Step 1
   const handleImageChange = (e) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -124,11 +121,8 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
     setImagePreview(URL.createObjectURL(file))
     setUploadedImageUrl('')
     setError('')
-    setSuccessMsg('Gambar baru berhasil dipilih. Silakan tinjau dan klik tombol konfirmasi di bawah.')
-    setTimeout(() => setSuccessMsg(''), 3000)
   }
 
-  // Saat pilih gambar bawaan (preset PWA), langsung tampilkan pratinjau gambar tersebut di Step 1
   const handleSelectPreset = (url) => {
     setImageFile(null)
     setImagePreview(url)
@@ -136,7 +130,6 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
     setError('')
   }
 
-  // Tombol Konfirmasi Foto -> Unggah file (jika ada) lalu lanjut ke Step 2 (Form Detail)
   const handleConfirmImage = async () => {
     if (!imagePreview && !uploadedImageUrl && !imageFile) {
       setError('Silakan pilih file foto dari perangkat atau pilih salah satu gambar bawaan terlebih dahulu.')
@@ -329,40 +322,42 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
             Unggah foto produk (JPG, PNG, atau WebP maks. 5MB) atau pilih salah satu gambar bawaan studio di bawah ini.
           </p>
 
-          {/* Dropzone Upload & Pilihan Gambar Bawaan PWA (Selalu tersedia agar mudah mengganti gambar) */}
-          <div className="upload-dropzone" style={{ marginBottom: imagePreview ? 24 : 0 }}>
-            <input
-              id="furniture-image-input"
-              type="file"
-              accept="image/jpeg,image/jpg,image/png,image/webp"
-              onChange={handleImageChange}
-              className="hidden-file-input"
-            />
-            <label htmlFor="furniture-image-input" className="upload-label">
-              <Upload size={36} className="upload-icon" />
-              <span className="upload-main-text">Klik untuk memilih file foto dari perangkat</span>
-              <span className="upload-sub-text">Format JPG, PNG, atau WebP beresolusi jelas</span>
-            </label>
+          {/* Input file tersembunyi tetap ter-mount agar tombol Ubah dengan Gambar Baru dapat memicunya */}
+          <input
+            id="furniture-image-input"
+            type="file"
+            accept="image/jpeg,image/jpg,image/png,image/webp"
+            onChange={handleImageChange}
+            className="hidden-file-input"
+          />
 
-            <div className="preset-selector">
-              <span className="preset-title">Atau klik salah satu preset studio Kayu &amp; Ruang:</span>
-              <div className="preset-pills">
-                {PRESET_IMAGES.map((preset) => (
-                  <button
-                    key={preset.url}
-                    type="button"
-                    className={`pill ${imagePreview === preset.url ? 'pill--active' : ''}`}
-                    onClick={() => handleSelectPreset(preset.url)}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
+          {/* Saat belum ada gambar dipilih (!imagePreview), tampilkan menu dropzone & preset.
+              Saat gambar sudah diupload atau dipilih, HILANGKAN menu dropzone dan tampilkan gambarnya saja! */}
+          {!imagePreview ? (
+            <div className="upload-dropzone">
+              <label htmlFor="furniture-image-input" className="upload-label">
+                <Upload size={36} className="upload-icon" />
+                <span className="upload-main-text">Klik untuk memilih file foto dari perangkat</span>
+                <span className="upload-sub-text">Format JPG, PNG, atau WebP beresolusi jelas</span>
+              </label>
+
+              <div className="preset-selector">
+                <span className="preset-title">Atau klik salah satu preset studio Kayu &amp; Ruang:</span>
+                <div className="preset-pills">
+                  {PRESET_IMAGES.map((preset) => (
+                    <button
+                      key={preset.url}
+                      type="button"
+                      className="pill"
+                      onClick={() => handleSelectPreset(preset.url)}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
-
-          {/* Pratinjau Gambar Baru + Tombol Konfirmasi + Tombol Ubah Gambar (Sesuai Gambar 2) */}
-          {imagePreview && (
+          ) : (
             <div className="preview-container">
               <div className="preview-image-wrap">
                 <img src={imagePreview} alt="Preview Furnitur" className="preview-img" />
@@ -374,7 +369,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
                     setImagePreview(null)
                     setUploadedImageUrl('')
                   }}
-                  title="Hapus gambar"
+                  title="Ganti / Hapus gambar"
                 >
                   <X size={18} />
                 </button>
@@ -410,12 +405,12 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
                   type="button"
                   className="btn btn--outline"
                   onClick={() => {
-                    const currentIdx = PRESET_IMAGES.findIndex((p) => p.url === imagePreview)
-                    const nextPreset = PRESET_IMAGES[(currentIdx + 1) % PRESET_IMAGES.length]
-                    handleSelectPreset(nextPreset.url)
+                    setImageFile(null)
+                    setImagePreview(null)
+                    setUploadedImageUrl('')
                   }}
                 >
-                  Ganti Gambar Bawaan PWA
+                  Pilih Gambar Bawaan PWA
                 </button>
               </div>
             </div>

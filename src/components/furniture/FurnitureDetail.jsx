@@ -10,6 +10,7 @@ import {
   Share2,
   Check,
   MessageCircle,
+  RotateCcw,
 } from 'lucide-react'
 import FavoriteButton from '../common/FavoriteButton'
 import ConfirmModal from '../modals/ConfirmModal'
@@ -38,9 +39,12 @@ export default function FurnitureDetail({
 
   const {
     reviews,
+    deletedReviews,
     loading: reviewsLoading,
     refetch: refetchReviews,
     softDeleteReview,
+    restoreReview,
+    hardDeleteReview,
   } = useReviews(furniture.id)
   const { createReview, loading: submitting } = useCreateReview()
   const { addToCart } = useCart()
@@ -48,8 +52,10 @@ export default function FurnitureDetail({
   const [rating, setRating] = useState(5)
   const [comment, setComment] = useState('')
   const [reviewSuccess, setReviewSuccess] = useState('')
+  const [showDeletedReviews, setShowDeletedReviews] = useState(false)
   const [reviewToDelete, setReviewToDelete] = useState(null)
-  const [deletingReview, setDeletingReview] = useState(false)
+  const [reviewToHardDelete, setReviewToHardDelete] = useState(null)
+  const [processingReview, setProcessingReview] = useState(false)
   const [copiedLink, setCopiedLink] = useState(false)
   const [addedMsg, setAddedMsg] = useState('')
 
@@ -93,16 +99,40 @@ export default function FurnitureDetail({
     setTimeout(() => setReviewSuccess(''), 3000)
   }
 
-  const handleConfirmDeleteReview = async () => {
+  const handleConfirmSoftDeleteReview = async () => {
     if (!reviewToDelete) return
     try {
-      setDeletingReview(true)
-      await softDeleteReview(reviewToDelete.id)
+      setProcessingReview(true)
+      await softDeleteReview(reviewToDelete)
       setReviewToDelete(null)
-      setReviewSuccess('Ulasan berhasil dihapus.')
+      setReviewSuccess('Ulasan dipindahkan ke tempat sampah (Soft Delete).')
       setTimeout(() => setReviewSuccess(''), 3000)
     } finally {
-      setDeletingReview(false)
+      setProcessingReview(false)
+    }
+  }
+
+  const handleRestoreReview = async (rev) => {
+    try {
+      setProcessingReview(true)
+      await restoreReview(rev)
+      setReviewSuccess('Ulasan berhasil dikembalikan!')
+      setTimeout(() => setReviewSuccess(''), 3000)
+    } finally {
+      setProcessingReview(false)
+    }
+  }
+
+  const handleConfirmHardDeleteReview = async () => {
+    if (!reviewToHardDelete) return
+    try {
+      setProcessingReview(true)
+      await hardDeleteReview(reviewToHardDelete.id)
+      setReviewToHardDelete(null)
+      setReviewSuccess('Ulasan telah dihapus secara permanen.')
+      setTimeout(() => setReviewSuccess(''), 3000)
+    } finally {
+      setProcessingReview(false)
     }
   }
 
@@ -232,94 +262,167 @@ export default function FurnitureDetail({
       )}
 
       <section className="detail-section">
-        <h2>Ulasan Pelanggan</h2>
-        <form className="review-form" onSubmit={handleSubmitReview}>
-          <div className="review-stars">
-            {[1, 2, 3, 4, 5].map((n) => (
-              <button
-                key={n}
-                type="button"
-                className="star-btn"
-                onClick={() => setRating(n)}
-              >
-                <Star
-                  size={22}
-                  fill={n <= rating ? 'var(--brass)' : 'none'}
-                  stroke={n <= rating ? 'var(--brass)' : 'var(--steel)'}
-                />
-              </button>
-            ))}
-          </div>
-          <textarea
-            className="review-input"
-            rows="3"
-            placeholder="Bagikan kesan Anda mengenai kualitas material dan kenyamanan furnitur ini…"
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            required
-          />
-          <button type="submit" className="btn btn--primary" disabled={submitting}>
-            {submitting ? (
-              <>
-                <Loader size={16} className="spin" /> Mengirim…
-              </>
-            ) : (
-              <>
-                <Send size={16} /> Kirim Ulasan
-              </>
-            )}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 14, borderBottom: '1px solid var(--line)', paddingBottom: 8 }}>
+          <h2 style={{ margin: 0, border: 'none', padding: 0 }}>
+            {showDeletedReviews
+              ? `Tempat Sampah Ulasan (${deletedReviews.length})`
+              : `Ulasan Pelanggan (${reviews.length})`}
+          </h2>
+          <button
+            type="button"
+            className={`btn btn--sm ${showDeletedReviews ? 'btn--primary' : 'btn--outline'}`}
+            onClick={() => setShowDeletedReviews((prev) => !prev)}
+          >
+            <Trash2 size={14} />{' '}
+            {showDeletedReviews
+              ? 'Lihat Ulasan Aktif'
+              : `Ulasan Dihapus (${deletedReviews.length})`}
           </button>
-          {reviewSuccess && <p className="form-success">{reviewSuccess}</p>}
-        </form>
+        </div>
 
-        {reviewsLoading ? (
-          <p>Memuat ulasan…</p>
-        ) : reviews.length > 0 ? (
-          <ul className="review-list">
-            {reviews.map((rev) => (
-              <li key={rev.id} className="review-item">
-                <div className="review-head">
-                  <span className="review-user">{rev.user_identifier}</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span className="review-stars-display">
-                      {Array.from({ length: 5 }, (_, i) => (
-                        <Star
-                          key={i}
-                          size={14}
-                          fill={i < rev.rating ? 'var(--brass)' : 'none'}
-                          stroke={i < rev.rating ? 'var(--brass)' : 'var(--line)'}
-                        />
-                      ))}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn btn--danger-ghost btn--sm"
-                      onClick={() => setReviewToDelete(rev)}
-                      title="Hapus Ulasan (Soft Delete)"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+        {reviewSuccess && (
+          <p className="form-success" style={{ marginBottom: 12 }}>
+            {reviewSuccess}
+          </p>
+        )}
+
+        {showDeletedReviews ? (
+          deletedReviews.length === 0 ? (
+            <p>Belum ada ulasan yang dihapus sementara.</p>
+          ) : (
+            <ul className="review-list">
+              {deletedReviews.map((rev) => (
+                <li key={rev.id} className="review-item" style={{ background: 'var(--paper)', padding: 12, borderRadius: 8 }}>
+                  <div className="review-head">
+                    <span className="review-user">{rev.user_identifier}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <button
+                        type="button"
+                        className="btn btn--primary btn--sm"
+                        onClick={() => handleRestoreReview(rev)}
+                        disabled={processingReview}
+                      >
+                        <RotateCcw size={13} /> Kembalikan
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--danger btn--sm"
+                        onClick={() => setReviewToHardDelete(rev)}
+                        disabled={processingReview}
+                      >
+                        <Trash2 size={13} /> Hapus Permanen
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <p className="review-comment">{rev.comment}</p>
-              </li>
-            ))}
-          </ul>
+                  <p className="review-comment">{rev.comment}</p>
+                </li>
+              ))}
+            </ul>
+          )
         ) : (
-          <p>Belum ada ulasan untuk produk ini.</p>
+          <>
+            <form className="review-form" onSubmit={handleSubmitReview}>
+              <div className="review-stars">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className="star-btn"
+                    onClick={() => setRating(n)}
+                  >
+                    <Star
+                      size={22}
+                      fill={n <= rating ? 'var(--brass)' : 'none'}
+                      stroke={n <= rating ? 'var(--brass)' : 'var(--steel)'}
+                    />
+                  </button>
+                ))}
+              </div>
+              <textarea
+                className="review-input"
+                rows="3"
+                placeholder="Bagikan kesan Anda mengenai kualitas material dan kenyamanan furnitur ini…"
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                required
+              />
+              <button type="submit" className="btn btn--primary" disabled={submitting}>
+                {submitting ? (
+                  <>
+                    <Loader size={16} className="spin" /> Mengirim…
+                  </>
+                ) : (
+                  <>
+                    <Send size={16} /> Kirim Ulasan
+                  </>
+                )}
+              </button>
+            </form>
+
+            {reviewsLoading ? (
+              <p>Memuat ulasan…</p>
+            ) : reviews.length > 0 ? (
+              <ul className="review-list">
+                {reviews.map((rev) => (
+                  <li key={rev.id} className="review-item">
+                    <div className="review-head">
+                      <span className="review-user">{rev.user_identifier}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span className="review-stars-display">
+                          {Array.from({ length: 5 }, (_, i) => (
+                            <Star
+                              key={i}
+                              size={14}
+                              fill={i < rev.rating ? 'var(--brass)' : 'none'}
+                              stroke={i < rev.rating ? 'var(--brass)' : 'var(--line)'}
+                            />
+                          ))}
+                        </span>
+                        <button
+                          type="button"
+                          className="btn btn--danger-ghost btn--sm"
+                          onClick={() => setReviewToDelete(rev)}
+                          title="Hapus Ulasan (Soft Delete)"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                    <p className="review-comment">{rev.comment}</p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>Belum ada ulasan untuk produk ini.</p>
+            )}
+          </>
         )}
       </section>
 
+      {/* Modal Soft Delete Ulasan */}
       <ConfirmModal
         open={Boolean(reviewToDelete)}
-        title="Hapus Ulasan Pelanggan"
-        message={`Apakah Anda yakin ingin menghapus ulasan dari "${reviewToDelete?.user_identifier}"?`}
-        confirmLabel="Hapus Ulasan"
+        title="Pindahkan Ulasan ke Tempat Sampah"
+        message={`Apakah Anda yakin ingin menghapus sementara ulasan dari "${reviewToDelete?.user_identifier}"? Anda dapat mengembalikannya dari menu Ulasan Dihapus.`}
+        confirmLabel="Ya, Soft Delete"
         cancelLabel="Batal"
         danger
-        loading={deletingReview}
-        onConfirm={handleConfirmDeleteReview}
+        loading={processingReview}
+        onConfirm={handleConfirmSoftDeleteReview}
         onCancel={() => setReviewToDelete(null)}
+      />
+
+      {/* Modal Hard Delete Ulasan Permanen */}
+      <ConfirmModal
+        open={Boolean(reviewToHardDelete)}
+        title="Hapus Ulasan Permanen (Hard Delete)"
+        message={`Apakah Anda yakin ingin menghapus permanen ulasan dari "${reviewToHardDelete?.user_identifier}" dari database? Tindakan ini tidak dapat dibatalkan.`}
+        confirmLabel="Hapus Permanen"
+        cancelLabel="Batal"
+        danger
+        loading={processingReview}
+        onConfirm={handleConfirmHardDeleteReview}
+        onCancel={() => setReviewToHardDelete(null)}
       />
     </div>
   )

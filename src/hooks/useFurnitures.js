@@ -3,6 +3,7 @@ import furnitureService from '../services/furnitureService'
 
 export function useFurnitures(params = {}) {
   const [furnitures, setFurnitures] = useState([])
+  const [deletedFurnitures, setDeletedFurnitures] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [source, setSource] = useState('local')
@@ -16,9 +17,10 @@ export function useFurnitures(params = {}) {
       const response = await furnitureService.getFurnitures(params)
       if (response.success) {
         setFurnitures(response.data || [])
+        setDeletedFurnitures(response.deletedData || [])
         setSource(response.source || 'local')
       } else {
-        setError(response.message || 'Gagal memuat katalog furniture.')
+        setError(response.message || 'Gagal memuat katalog furnitur.')
       }
     } catch (err) {
       setError(err.message || 'Terjadi kesalahan saat memuat katalog.')
@@ -32,5 +34,12 @@ export function useFurnitures(params = {}) {
     fetchFurnitures()
   }, [fetchFurnitures])
 
-  return { furnitures, loading, error, source, refetch: fetchFurnitures }
+  return {
+    furnitures,
+    deletedFurnitures,
+    loading,
+    error,
+    source,
+    refetch: fetchFurnitures,
+  }
 }

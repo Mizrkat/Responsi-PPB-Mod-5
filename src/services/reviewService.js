@@ -2,6 +2,7 @@ import { apiClient, isSupabaseConfigured } from '../config/api'
 
 const LOCAL_REVIEWS_KEY = 'kayu_ruang_reviews_v1'
 const SOFT_DELETED_REVIEWS_KEY = 'kayu_ruang_soft_deleted_reviews_v1'
+const SOFT_DELETED_REVIEWS_ARCHIVE_KEY = 'kayu_ruang_soft_deleted_reviews_archive_v1'
 
 const DEFAULT_REVIEWS = {
   'furn-101': [
@@ -40,13 +41,61 @@ const readSoftDeletedReviewIds = () => {
   }
 }
 
-const addSoftDeletedReviewId = (reviewId) => {
+const readDeletedReviewArchive = () => {
+  try {
+    const raw = localStorage.getItem(SOFT_DELETED_REVIEWS_ARCHIVE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const writeDeletedReviewArchive = (list) => {
+  try {
+    localStorage.setItem(SOFT_DELETED_REVIEWS_ARCHIVE_KEY, JSON.stringify(list))
+  } catch {
+    /* ignore */
+  }
+}
+
+const addSoftDeletedReviewRecord = (reviewId, furnitureId, reviewObj = null) => {
   try {
     const current = readSoftDeletedReviewIds()
     if (!current.includes(String(reviewId))) {
       current.push(String(reviewId))
       localStorage.setItem(SOFT_DELETED_REVIEWS_KEY, JSON.stringify(current))
     }
+    if (reviewObj) {
+      const archive = readDeletedReviewArchive().filter(
+        (r) => String(r.id) !== String(reviewId),
+      )
+      writeDeletedReviewArchive([
+        {
+          ...reviewObj,
+          furniture_id: furnitureId,
+          original_comment: String(reviewObj.comment || '').replace(/^\[DELETED\]\s*/, ''),
+          is_deleted: true,
+          deleted_at: new Date().toISOString(),
+        },
+        ...archive,
+      ])
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+const removeSoftDeletedReviewRecord = (reviewId) => {
+  try {
+    const current = readSoftDeletedReviewIds().filter(
+      (id) => String(id) !== String(reviewId),
+    )
+    localStorage.setItem(SOFT_DELETED_REVIEWS_KEY, JSON.stringify(current))
+    const archive = readDeletedReviewArchive().filter(
+      (r) => String(r.id) !== String(reviewId),
+    )
+    writeDeletedReviewArchive(archive)
   } catch {
     /* ignore */
   }
@@ -79,10 +128,13 @@ const writeLocalReviews = (mapObj) => {
 
 class ReviewService {
   /**
-   * Mengambil daftar ulasan yang aktif (tidak di-soft-delete) untuk 1 produk
+   * Mengambil daftar ulasan aktif & daftar ulasan yang di-soft-delete untuk 1 produk
    */
   async getReviews(furnitureId) {
     const deletedIds = readSoftDeletedReviewIds()
+    const localArchive = readDeletedReviewArchive().filter(
+      (r) => String(r.furniture_id) === String(furnitureId),
+    )
 
     if (isSupabaseConfigured() && navigator.onLine && !String(furnitureId).startsWith('furn-')) {
       try {
@@ -90,21 +142,37 @@ class ReviewService {
           `/rest/v1/reviews?furniture_id=eq.${furnitureId}&select=*&order=created_at.desc`,
         )
         if (Array.isArray(data)) {
+          const formatRow = (r) => ({
+            id: r.id,
+            furniture_id: r.furniture_id,
+            user_identifier:
+              r.user_name ||
+              (r.user_id ? `Pelanggan ${String(r.user_id).substring(0, 8)}` : 'Pelanggan'),
+            rating: r.rating,
+            comment: String(r.comment || '').replace(/^\[DELETED\]\s*/, ''),
+            original_comment: String(r.comment || '').replace(/^\[DELETED\]\s*/, ''),
+            is_deleted: isReviewSoftDeleted(r, deletedIds),
+            deleted_at: r.deleted_at || null,
+            created_at: r.created_at,
+          })
+
           const activeReviews = data
             .filter((r) => !isReviewSoftDeleted(r, deletedIds))
-            .map((r) => ({
-              id: r.id,
-              furniture_id: r.furniture_id,
-              user_identifier:
-                r.user_name ||
-                (r.user_id ? `Pelanggan ${String(r.user_id).substring(0, 8)}` : 'Pelanggan'),
-              rating: r.rating,
-              comment: r.comment || '',
-              is_deleted: Boolean(r.is_deleted),
-              deleted_at: r.deleted_at || null,
-              created_at: r.created_at,
-            }))
-          return { success: true, data: activeReviews }
+            .map(formatRow)
+
+          const remoteDeleted = data
+            .filter((r) => isReviewSoftDeleted(r, deletedIds))
+            .map(formatRow)
+
+          const delMap = new Map()
+          localArchive.forEach((r) => delMap.set(String(r.id), r))
+          remoteDeleted.forEach((r) => delMap.set(String(r.id), r))
+
+          return {
+            success: true,
+            data: activeReviews,
+            deletedData: Array.from(delMap.values()),
+          }
         }
       } catch {
         /* fallback ke localStorage */
@@ -112,15 +180,21 @@ class ReviewService {
     }
 
     const allLocal = readLocalReviews()
-    const list = (allLocal[String(furnitureId)] || []).filter(
-      (r) => !isReviewSoftDeleted(r, deletedIds),
-    )
-    return { success: true, data: list }
+    const allForProduct = allLocal[String(furnitureId)] || []
+    const activeList = allForProduct.filter((r) => !isReviewSoftDeleted(r, deletedIds))
+    const localDeleted = allForProduct.filter((r) => isReviewSoftDeleted(r, deletedIds))
+
+    const delMap = new Map()
+    localArchive.forEach((r) => delMap.set(String(r.id), r))
+    localDeleted.forEach((r) => delMap.set(String(r.id), r))
+
+    return {
+      success: true,
+      data: activeList,
+      deletedData: Array.from(delMap.values()),
+    }
   }
 
-  /**
-   * Menyimpan ulasan baru ke `public.reviews`
-   */
   async createReview(furnitureId, reviewData) {
     if (isSupabaseConfigured() && navigator.onLine && !String(furnitureId).startsWith('furn-')) {
       try {
@@ -181,12 +255,11 @@ class ReviewService {
   }
 
   /**
-   * SOFT DELETE ULASAN: Menandai ulasan sebagai terhapus (is_deleted = true, deleted_at = timestamp)
-   * menggunakan PATCH tanpa menghapus baris fisik di tabel `public.reviews`!
+   * SOFT DELETE ULASAN
    */
-  async deleteReview(reviewId, furnitureId) {
+  async deleteReview(reviewId, furnitureId, reviewObj = null) {
     const nowIso = new Date().toISOString()
-    addSoftDeletedReviewId(reviewId)
+    addSoftDeletedReviewRecord(reviewId, furnitureId, reviewObj)
 
     if (isSupabaseConfigured() && navigator.onLine && !String(reviewId).startsWith('rev-')) {
       try {
@@ -200,10 +273,11 @@ class ReviewService {
             { headers: { Prefer: 'return=minimal' } },
           )
         } catch {
+          const prevComment = reviewObj?.comment || ''
           await apiClient.patch(
             `/rest/v1/reviews?id=eq.${reviewId}`,
             {
-              comment: '[DELETED]',
+              comment: `[DELETED] ${prevComment}`,
             },
             { headers: { Prefer: 'return=minimal' } },
           )
@@ -225,6 +299,92 @@ class ReviewService {
     }
 
     return { success: true, softDeleted: true, deleted_at: nowIso }
+  }
+
+  /**
+   * RESTORE ULASAN (Kembalikan ulasan yang sudah di-soft delete)
+   */
+  async restoreReview(reviewObj, furnitureId) {
+    if (!reviewObj) return { success: false }
+    const reviewId = reviewObj.id
+    const cleanComment = String(
+      reviewObj.original_comment || reviewObj.comment || '',
+    ).replace(/^\[DELETED\]\s*/, '')
+
+    removeSoftDeletedReviewRecord(reviewId)
+
+    if (isSupabaseConfigured() && navigator.onLine && !String(reviewId).startsWith('rev-')) {
+      try {
+        try {
+          await apiClient.patch(
+            `/rest/v1/reviews?id=eq.${reviewId}`,
+            {
+              is_deleted: false,
+              deleted_at: null,
+              comment: cleanComment,
+            },
+            { headers: { Prefer: 'return=minimal' } },
+          )
+        } catch {
+          await apiClient.patch(
+            `/rest/v1/reviews?id=eq.${reviewId}`,
+            {
+              comment: cleanComment,
+            },
+            { headers: { Prefer: 'return=minimal' } },
+          )
+        }
+      } catch (err) {
+        console.warn('[ReviewService] Restore ulasan lokal diterapkan:', err.message)
+      }
+    }
+
+    if (furnitureId) {
+      const allLocal = readLocalReviews()
+      const list = allLocal[String(furnitureId)] || []
+      const exists = list.some((r) => String(r.id) === String(reviewId))
+      if (exists) {
+        allLocal[String(furnitureId)] = list.map((r) =>
+          String(r.id) === String(reviewId)
+            ? { ...r, comment: cleanComment, is_deleted: false, deleted_at: null }
+            : r,
+        )
+      } else {
+        allLocal[String(furnitureId)] = [
+          { ...reviewObj, comment: cleanComment, is_deleted: false, deleted_at: null },
+          ...list,
+        ]
+      }
+      writeLocalReviews(allLocal)
+    }
+
+    return { success: true }
+  }
+
+  /**
+   * HARD DELETE ULASAN (Hapus Permanen dari Database `public.reviews`)
+   */
+  async hardDeleteReview(reviewId, furnitureId) {
+    removeSoftDeletedReviewRecord(reviewId)
+
+    if (isSupabaseConfigured() && navigator.onLine && !String(reviewId).startsWith('rev-')) {
+      try {
+        await apiClient.delete(`/rest/v1/reviews?id=eq.${reviewId}`)
+      } catch (err) {
+        console.warn('[ReviewService] Gagal hard delete ulasan di Supabase:', err.message)
+      }
+    }
+
+    if (furnitureId) {
+      const allLocal = readLocalReviews()
+      const list = allLocal[String(furnitureId)] || []
+      allLocal[String(furnitureId)] = list.filter(
+        (r) => String(r.id) !== String(reviewId),
+      )
+      writeLocalReviews(allLocal)
+    }
+
+    return { success: true, hardDeleted: true }
   }
 }
 

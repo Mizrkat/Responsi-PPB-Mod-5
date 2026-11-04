@@ -3,6 +3,7 @@ import FURNITURES_LOCAL from '../data/furnitures'
 
 const LOCAL_CATALOG_KEY = 'kayu_ruang_catalog_items_v1'
 const SOFT_DELETED_FURN_KEY = 'kayu_ruang_soft_deleted_furnitures_v1'
+const SOFT_DELETED_ARCHIVE_KEY = 'kayu_ruang_soft_deleted_archive_v1'
 
 const ASSEMBLY_LABELS = {
   mudah: 'Siap Pakai (Fully Assembled)',
@@ -22,13 +23,72 @@ export const readSoftDeletedIds = () => {
   }
 }
 
-export const addSoftDeletedId = (id, name = '') => {
+export const readSoftDeletedArchive = () => {
   try {
+    const raw = localStorage.getItem(SOFT_DELETED_ARCHIVE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+export const writeSoftDeletedArchive = (items) => {
+  try {
+    localStorage.setItem(SOFT_DELETED_ARCHIVE_KEY, JSON.stringify(items))
+  } catch {
+    /* ignore */
+  }
+}
+
+export const addSoftDeletedRecord = (itemOrId, name = '') => {
+  try {
+    const id = typeof itemOrId === 'object' && itemOrId !== null ? itemOrId.id : itemOrId
+    const itemName = (typeof itemOrId === 'object' && itemOrId !== null ? itemOrId.name : name) || ''
     const current = readSoftDeletedIds()
     const next = new Set(current)
     if (id !== undefined && id !== null) next.add(String(id))
-    if (name) next.add(`name:${name.toLowerCase()}`)
+    if (itemName) next.add(`name:${itemName.toLowerCase()}`)
     localStorage.setItem(SOFT_DELETED_FURN_KEY, JSON.stringify(Array.from(next)))
+
+    if (typeof itemOrId === 'object' && itemOrId !== null) {
+      const archive = readSoftDeletedArchive()
+      const filtered = archive.filter((a) => String(a.id) !== String(itemOrId.id))
+      writeSoftDeletedArchive([
+        {
+          ...itemOrId,
+          original_category:
+            itemOrId.category && !String(itemOrId.category).startsWith('[DELETED]')
+              ? itemOrId.category
+              : itemOrId.type || 'Kursi',
+          is_deleted: true,
+          deleted_at: new Date().toISOString(),
+        },
+        ...filtered,
+      ])
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+export const removeSoftDeletedRecord = (id, name = '') => {
+  try {
+    const current = readSoftDeletedIds()
+    const lowerName = (name || '').toLowerCase()
+    const filteredIds = current.filter(
+      (entry) => entry !== String(id) && (!lowerName || entry !== `name:${lowerName}`),
+    )
+    localStorage.setItem(SOFT_DELETED_FURN_KEY, JSON.stringify(filteredIds))
+
+    const archive = readSoftDeletedArchive()
+    writeSoftDeletedArchive(
+      archive.filter(
+        (a) =>
+          String(a.id) !== String(id) &&
+          (!lowerName || (a.name || '').toLowerCase() !== lowerName),
+      ),
+    )
   } catch {
     /* ignore */
   }
@@ -72,6 +132,7 @@ export const writeLocalCatalog = (items) => {
 export const resetLocalCatalog = () => {
   try {
     localStorage.removeItem(SOFT_DELETED_FURN_KEY)
+    localStorage.removeItem(SOFT_DELETED_ARCHIVE_KEY)
     localStorage.setItem(LOCAL_CATALOG_KEY, JSON.stringify(FURNITURES_LOCAL))
     return [...FURNITURES_LOCAL]
   } catch {
@@ -117,7 +178,10 @@ export const normalizeFurniture = (item) => {
           'Bersihkan permukaan kayu secara berkala menggunakan kain microfiber kering.',
         ]
 
-  const category = item.category || item.type || 'Kursi'
+  const rawCategory = item.category || item.type || 'Kursi'
+  const category = String(rawCategory).startsWith('[DELETED]')
+    ? item.original_category || 'Kursi'
+    : rawCategory
   const material = item.material || item.caliber || 'Kayu Jati Solid'
   const assemblyType = formatAssemblyType(item.assembly_type || item.difficulty)
 
@@ -136,7 +200,7 @@ export const normalizeFurniture = (item) => {
     image_url: item.image_url || item.image || '/furniture/chair.jpg',
     image: item.image_url || item.image || '/furniture/chair.jpg',
     is_featured: Boolean(item.is_featured),
-    is_deleted: Boolean(item.is_deleted),
+    is_deleted: Boolean(item.is_deleted) || String(rawCategory).startsWith('[DELETED]'),
     deleted_at: item.deleted_at || null,
     specs: specsList,
     ingredients: specsList,
@@ -205,10 +269,11 @@ class FurnitureService {
   }
 
   /**
-   * READ: Mengambil seluruh produk yang TIDAK di-soft-delete (is_deleted = false)
+   * READ: Mengambil daftar produk aktif dan daftar produk yang di-soft-delete
    */
   async getFurnitures(params = {}) {
     const deletedRegistry = readSoftDeletedIds()
+    const localArchive = readSoftDeletedArchive()
 
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
@@ -227,12 +292,20 @@ class FurnitureService {
         const data = await apiClient.get(`/rest/v1/furnitures?${queryString}`)
         const allRows = Array.isArray(data) ? data : []
 
-        // Filter hanya baris yang aktif (bukan soft-deleted)
         let activeList = allRows
           .filter((row) => !isItemSoftDeleted(row, deletedRegistry))
           .map(normalizeFurniture)
 
-        // Hanya auto-seed jika seluruh tabel benar-benar kosong (allRows.length === 0)
+        // Gabungkan baris yang di-soft-delete di server maupun arsip lokal
+        const remoteDeleted = allRows
+          .filter((row) => isItemSoftDeleted(row, deletedRegistry))
+          .map(normalizeFurniture)
+
+        const deletedMap = new Map()
+        localArchive.forEach((item) => deletedMap.set(String(item.id), normalizeFurniture(item)))
+        remoteDeleted.forEach((item) => deletedMap.set(String(item.id), item))
+        const deletedList = Array.from(deletedMap.values())
+
         const isUnfiltered =
           !params.search && (!params.category || params.category === 'Semua' || params.category === 'All')
         if (allRows.length === 0 && isUnfiltered) {
@@ -254,6 +327,7 @@ class FurnitureService {
         return {
           success: true,
           data: activeList,
+          deletedData: deletedList,
           source: 'supabase',
           pagination: {
             total: activeList.length,
@@ -267,9 +341,11 @@ class FurnitureService {
     }
 
     const localItems = readLocalCatalog().map(normalizeFurniture)
+    const deletedList = localArchive.map(normalizeFurniture)
     return {
       success: true,
       data: localItems,
+      deletedData: deletedList,
       source: 'local',
       pagination: {
         total: localItems.length,
@@ -417,11 +493,17 @@ class FurnitureService {
 
   /**
    * SOFT DELETE: Menandai item sebagai terhapus (is_deleted = true, deleted_at = timestamp)
-   * menggunakan PATCH tanpa menghapus baris fisik dari database Supabase!
    */
-  async deleteFurniture(id, itemName = '') {
+  async deleteFurniture(id, itemName = '', fullItem = null) {
     const nowIso = new Date().toISOString()
-    addSoftDeletedId(id, itemName)
+    const current = readLocalCatalog()
+    const targetObj =
+      fullItem ||
+      current.find(
+        (item) => String(item.id) === String(id) || (itemName && item.name === itemName),
+      ) || { id, name: itemName }
+
+    addSoftDeletedRecord(targetObj, itemName)
 
     if (isSupabaseConfigured() && navigator.onLine) {
       try {
@@ -433,7 +515,6 @@ class FurnitureService {
 
         if (filterQuery) {
           try {
-            // 1. Soft delete standar menggunakan kolom is_deleted & deleted_at
             await apiClient.patch(
               `/rest/v1/furnitures?${filterQuery}`,
               {
@@ -444,7 +525,6 @@ class FurnitureService {
               { headers: { Prefer: 'return=minimal' } },
             )
           } catch {
-            // 2. Fallback soft delete jika kolom is_deleted belum ditambahkan di SQL
             await apiClient.patch(
               `/rest/v1/furnitures?${filterQuery}`,
               {
@@ -460,7 +540,6 @@ class FurnitureService {
       }
     }
 
-    const current = readLocalCatalog()
     writeLocalCatalog(
       current.filter(
         (item) =>
@@ -469,6 +548,101 @@ class FurnitureService {
       ),
     )
     return { success: true, softDeleted: true, deleted_at: nowIso }
+  }
+
+  /**
+   * RESTORE (Kembalikan dari Soft Delete): Mengubah is_deleted = false & deleted_at = null
+   */
+  async restoreFurniture(item) {
+    if (!item) return { success: false }
+    const id = item.id
+    const itemName = item.name || ''
+    const restoredCategory =
+      item.original_category ||
+      (item.category && !String(item.category).startsWith('[DELETED]') ? item.category : 'Kursi')
+
+    removeSoftDeletedRecord(id, itemName)
+
+    if (isSupabaseConfigured() && navigator.onLine) {
+      try {
+        const filterQuery = !String(id).startsWith('furn-')
+          ? `id=eq.${id}`
+          : itemName
+          ? `name=eq.${encodeURIComponent(itemName)}`
+          : null
+
+        if (filterQuery) {
+          try {
+            await apiClient.patch(
+              `/rest/v1/furnitures?${filterQuery}`,
+              {
+                is_deleted: false,
+                deleted_at: null,
+                category: restoredCategory,
+                updated_at: new Date().toISOString(),
+              },
+              { headers: { Prefer: 'return=minimal' } },
+            )
+          } catch {
+            await apiClient.patch(
+              `/rest/v1/furnitures?${filterQuery}`,
+              {
+                category: restoredCategory,
+                updated_at: new Date().toISOString(),
+              },
+              { headers: { Prefer: 'return=minimal' } },
+            )
+          }
+        }
+      } catch (err) {
+        console.warn('[FurnitureService] Restore lokal diterapkan:', err.message)
+      }
+    }
+
+    const restoredObj = normalizeFurniture({
+      ...item,
+      category: restoredCategory,
+      type: restoredCategory,
+      is_deleted: false,
+      deleted_at: null,
+    })
+    const current = readLocalCatalog()
+    if (!current.some((c) => String(c.id) === String(restoredObj.id))) {
+      writeLocalCatalog([restoredObj, ...current])
+    }
+    return { success: true, data: restoredObj }
+  }
+
+  /**
+   * HARD DELETE (Hapus Permanen dari Database): Menghapus baris fisik dari `public.furnitures`
+   */
+  async hardDeleteFurniture(id, itemName = '') {
+    removeSoftDeletedRecord(id, itemName)
+
+    if (isSupabaseConfigured() && navigator.onLine) {
+      try {
+        const filterQuery = !String(id).startsWith('furn-')
+          ? `id=eq.${id}`
+          : itemName
+          ? `name=eq.${encodeURIComponent(itemName)}`
+          : null
+        if (filterQuery) {
+          await apiClient.delete(`/rest/v1/furnitures?${filterQuery}`)
+        }
+      } catch (err) {
+        console.warn('[FurnitureService] Gagal hard delete di Supabase:', err.message)
+      }
+    }
+
+    const current = readLocalCatalog()
+    writeLocalCatalog(
+      current.filter(
+        (item) =>
+          String(item.id) !== String(id) &&
+          (!itemName || item.name !== itemName),
+      ),
+    )
+    return { success: true, hardDeleted: true }
   }
 }
 

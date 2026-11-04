@@ -26,7 +26,6 @@ export default function ProfilePage({ onReplaySplash }) {
   const [bio, setBio] = useState(profile.bio || '')
   const [avatar, setAvatar] = useState(profile.avatar_url || profile.avatar || null)
 
-  // Form edit disembunyikan secara default; hanya tampil saat tombol "Edit Profil" diklik
   const [isEditing, setIsEditing] = useState(false)
   const [savingProfile, setSavingProfile] = useState(false)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
@@ -97,9 +96,9 @@ export default function ProfilePage({ onReplaySplash }) {
       setSavingProfile(true)
       const updated = {
         ...profile,
-        username: username.trim() || 'Mahasiswa Praktikan',
-        nim: nim.trim() || '21120123140001',
-        kelompok: kelompok.trim() || 'Kelompok 05',
+        username: username.trim() || 'Radhine Muhammad Rossie',
+        nim: nim.trim() || '21120124120017',
+        kelompok: kelompok.trim() || 'Kelompok 37 — Praktikum PPB',
         prodi: prodi.trim(),
         bio: bio.trim(),
         avatar_url: avatar,
@@ -134,26 +133,15 @@ export default function ProfilePage({ onReplaySplash }) {
             Informasi identitas anggota, koleksi favorit, dan ringkasan aktivitas belanja Anda di Kayu &amp; Ruang.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-          {!isEditing && (
-            <button
-              type="button"
-              className="btn btn--primary btn--sm"
-              onClick={handleOpenEdit}
-            >
-              <Pencil size={14} /> Edit Profil
-            </button>
-          )}
-          {onReplaySplash && (
-            <button
-              type="button"
-              className="btn btn--outline btn--sm"
-              onClick={onReplaySplash}
-            >
-              <Play size={14} /> Putar Intro
-            </button>
-          )}
-        </div>
+        {onReplaySplash && (
+          <button
+            type="button"
+            className="btn btn--outline btn--sm"
+            onClick={onReplaySplash}
+          >
+            <Play size={14} /> Putar Intro
+          </button>
+        )}
       </section>
 
       {feedback && (
@@ -162,11 +150,11 @@ export default function ProfilePage({ onReplaySplash }) {
         </div>
       )}
 
-      {/* Kartu Profil Utama */}
+      {/* Kartu Profil Utama dengan SATU tombol Edit Profil yang kontras */}
       <div className="profile-card">
         <div
           className="profile-card-top"
-          style={{ justifyContent: 'space-between' }}
+          style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
             <div className="avatar-wrap">
@@ -213,9 +201,15 @@ export default function ProfilePage({ onReplaySplash }) {
           {!isEditing && (
             <button
               type="button"
-              className="btn btn--outline btn--sm"
+              className="btn btn--primary btn--sm"
               onClick={handleOpenEdit}
-              style={{ alignSelf: 'flex-start' }}
+              style={{
+                background: 'var(--ink)',
+                color: '#ffffff',
+                borderColor: 'var(--ink)',
+                boxShadow: '0 2px 8px rgba(44, 30, 22, 0.2)',
+                flexShrink: 0,
+              }}
             >
               <Pencil size={14} /> Edit Profil
             </button>
@@ -275,7 +269,7 @@ export default function ProfilePage({ onReplaySplash }) {
                 type="text"
                 value={nim}
                 onChange={(e) => setNim(e.target.value)}
-                placeholder="Contoh: 21120123140001"
+                placeholder="Contoh: 21120124120017"
                 className="form-input"
                 required
               />
@@ -289,7 +283,7 @@ export default function ProfilePage({ onReplaySplash }) {
                 type="text"
                 value={kelompok}
                 onChange={(e) => setKelompok(e.target.value)}
-                placeholder="Contoh: Kelompok 05"
+                placeholder="Contoh: Kelompok 37 — Praktikum PPB"
                 className="form-input"
                 required
               />
@@ -301,7 +295,7 @@ export default function ProfilePage({ onReplaySplash }) {
                 type="text"
                 value={prodi}
                 onChange={(e) => setProdi(e.target.value)}
-                placeholder="Teknik Komputer - Universitas Diponegoro"
+                placeholder="Teknik Komputer — Universitas Diponegoro"
                 className="form-input"
               />
             </div>
