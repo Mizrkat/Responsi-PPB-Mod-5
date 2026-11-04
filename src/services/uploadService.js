@@ -1,17 +1,62 @@
 import axios from 'axios'
-import { BASE_URL, SUPABASE_KEY, IS_SUPABASE } from '../config/api'
+import { getSupabaseConfig, isSupabaseConfigured } from '../config/api'
 
 const ALLOWED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
 const MAX_SIZE_BYTES = 5 * 1024 * 1024 // 5 MB
 
+/**
+ * Kompresi gambar menggunakan HTML5 Canvas agar ukuran file ringan (<80 KB),
+ * mempercepat upload ke Supabase Storage Bucket dan mencegah error payload terlalu besar.
+ */
+const compressImageFile = (file, maxWidth = 900, maxHeight = 675, quality = 0.82) =>
+  new Promise((resolve) => {
+    try {
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const img = new Image()
+        img.onload = () => {
+          let { width, height } = img
+          if (width > maxWidth || height > maxHeight) {
+            const ratio = Math.min(maxWidth / width, maxHeight / height)
+            width = Math.round(width * ratio)
+            height = Math.round(height * ratio)
+          }
+          const canvas = document.createElement('canvas')
+          canvas.width = width
+          canvas.height = height
+          const ctx = canvas.getContext('2d')
+          ctx.drawImage(img, 0, 0, width, height)
+          const dataUrl = canvas.toDataURL('image/jpeg', quality)
+          canvas.toBlob(
+            (blob) => {
+              if (blob) {
+                const compressedFile = new File(
+                  [blob],
+                  file.name.replace(/\.[^.]+$/, '.jpg'),
+                  { type: 'image/jpeg' },
+                )
+                resolve({ file: compressedFile, dataUrl })
+              } else {
+                resolve({ file, dataUrl })
+              }
+            },
+            'image/jpeg',
+            quality,
+          )
+        }
+        img.onerror = () => resolve({ file, dataUrl: e.target.result })
+        img.src = e.target.result
+      }
+      reader.onerror = () => resolve({ file, dataUrl: null })
+      reader.readAsDataURL(file)
+    } catch {
+      resolve({ file, dataUrl: null })
+    }
+  })
+
 class UploadService {
   /**
    * Mengunggah file gambar ke Supabase Storage Bucket (`furnitures` atau `avatars`).
-   * Menyimpan file langsung di Storage Bucket Supabase dan mengembalikan public URL-nya.
-   *
-   * @param {File} file - File gambar yang dipilih pengguna
-   * @param {string} [bucketName='furnitures'] - Nama bucket di Supabase Storage ('furnitures' atau 'avatars')
-   * @param {string} [folder='products'] - Subfolder di dalam bucket ('products' atau 'profiles')
    */
   async uploadImage(file, bucketName = 'furnitures', folder = 'products') {
     if (!file) {
@@ -24,54 +69,52 @@ class UploadService {
       throw new Error('Ukuran gambar melebihi batas maksimum 5 MB.')
     }
 
-    if (IS_SUPABASE && navigator.onLine) {
-      const cleanExt = (file.name.split('.').pop() || 'png').toLowerCase()
+    const { file: uploadBlob, dataUrl } = await compressImageFile(file)
+
+    if (isSupabaseConfigured() && navigator.onLine) {
+      const { baseUrl, supabaseKey } = getSupabaseConfig()
+      const cleanExt = (uploadBlob.name.split('.').pop() || 'jpg').toLowerCase()
       const fileName = `${folder}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${cleanExt}`
       const objectPath = folder ? `${folder}/${fileName}` : fileName
 
-      try {
-        const uploadUrl = `${BASE_URL}/storage/v1/object/${bucketName}/${objectPath}`
-        await axios.post(uploadUrl, file, {
-          headers: {
-            'Content-Type': file.type,
-            apikey: SUPABASE_KEY,
-            Authorization: `Bearer ${SUPABASE_KEY}`,
-            'x-upsert': 'true',
-          },
-          timeout: 25000,
-        })
-        const publicUrl = `${BASE_URL}/storage/v1/object/public/${bucketName}/${objectPath}`
-        return {
-          success: true,
-          source: 'supabase_storage',
-          data: {
-            url: publicUrl,
-            bucket: bucketName,
-            path: objectPath,
-            filename: fileName,
-          },
+      // Coba unggah ke bucket utama, lalu fallback ke bucket 'furnitures' jika bucket 'avatars' belum ada
+      const candidateBuckets =
+        bucketName === 'avatars' ? ['avatars', 'furnitures'] : [bucketName]
+
+      for (const bucket of candidateBuckets) {
+        try {
+          const uploadUrl = `${baseUrl}/storage/v1/object/${bucket}/${objectPath}`
+          await axios.post(uploadUrl, uploadBlob, {
+            headers: {
+              'Content-Type': uploadBlob.type || 'image/jpeg',
+              apikey: supabaseKey,
+              Authorization: `Bearer ${supabaseKey}`,
+              'x-upsert': 'true',
+            },
+            timeout: 20000,
+          })
+          const publicUrl = `${baseUrl}/storage/v1/object/public/${bucket}/${objectPath}`
+          return {
+            success: true,
+            source: 'supabase_storage',
+            data: {
+              url: publicUrl,
+              bucket,
+              path: objectPath,
+              filename: fileName,
+            },
+          }
+        } catch (err) {
+          console.warn(`[UploadService] Bucket "${bucket}" gagal:`, err.message)
         }
-      } catch (err) {
-        console.warn(
-          `[UploadService] Upload ke Supabase Storage bucket "${bucketName}" gagal, beralih ke fallback Base64:`,
-          err,
-        )
       }
     }
-
-    // Fallback Base64 jika sedang offline atau bucket belum diinisialisasi
-    const dataUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result)
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })
 
     return {
       success: true,
       source: 'local_base64',
       data: {
-        url: dataUrl,
+        url: dataUrl || '/furniture/chair.jpg',
         bucket: 'local',
         path: file.name,
         filename: file.name,
@@ -83,12 +126,13 @@ class UploadService {
    * Mengambil daftar file yang tersimpan di dalam Supabase Storage Bucket
    */
   async listFiles(bucketName = 'furnitures', folder = 'products') {
-    if (!IS_SUPABASE || !navigator.onLine) {
+    if (!isSupabaseConfigured() || !navigator.onLine) {
       return { success: true, data: [] }
     }
+    const { baseUrl, supabaseKey } = getSupabaseConfig()
     try {
       const response = await axios.post(
-        `${BASE_URL}/storage/v1/object/list/${bucketName}`,
+        `${baseUrl}/storage/v1/object/list/${bucketName}`,
         {
           prefix: folder ? `${folder}/` : '',
           limit: 50,
@@ -98,8 +142,8 @@ class UploadService {
         {
           headers: {
             'Content-Type': 'application/json',
-            apikey: SUPABASE_KEY,
-            Authorization: `Bearer ${SUPABASE_KEY}`,
+            apikey: supabaseKey,
+            Authorization: `Bearer ${supabaseKey}`,
           },
         },
       )
@@ -108,7 +152,7 @@ class UploadService {
             .filter((f) => f.name && f.name !== '.emptyFolderPlaceholder')
             .map((f) => ({
               ...f,
-              publicUrl: `${BASE_URL}/storage/v1/object/public/${bucketName}/${folder ? `${folder}/` : ''}${f.name}`,
+              publicUrl: `${baseUrl}/storage/v1/object/public/${bucketName}/${folder ? `${folder}/` : ''}${f.name}`,
             }))
         : []
       return { success: true, data: files }

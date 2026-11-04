@@ -14,7 +14,7 @@ import {
 } from '../utils/helpers'
 
 export default function CatalogPage({ onNavigate }) {
-  const { furnitures, loading, refetch } = useFurnitures({ limit: 50 })
+  const { furnitures, loading, source, refetch } = useFurnitures({ limit: 50 })
 
   const [search, setSearch] = useState('')
   const [activeCategory, setActiveCategory] = useState('Semua')
@@ -37,7 +37,7 @@ export default function CatalogPage({ onNavigate }) {
     if (!deleteTarget) return
     try {
       setDeleting(true)
-      await furnitureService.deleteFurniture(deleteTarget.id)
+      await furnitureService.deleteFurniture(deleteTarget.id, deleteTarget.name)
       setDeleteTarget(null)
       refetch()
     } finally {
@@ -70,14 +70,28 @@ export default function CatalogPage({ onNavigate }) {
         <h1 className="display">Katalog Furniture Kayu Nusantara.</h1>
         <p className="lede">
           Koleksi kursi santai, meja makan solid oak, sofa linen, hingga kabinet credenza
-          karya pengrajin Jepara &amp; Semarang. Dilengkapi fitur CRUD penuh &amp; dukungan Offline PWA.
+          karya pengrajin Jepara &amp; Semarang. Dilengkapi fitur CRUD penuh yang terhubung ke tabel{' '}
+          <code>public.furnitures</code> di Supabase.
         </p>
       </section>
 
       <section>
         <div className="list-head">
-          <h2>Koleksi Tersedia ({filteredFurnitures.length} Produk)</h2>
+          <div>
+            <h2>Koleksi Tersedia ({filteredFurnitures.length} Produk)</h2>
+            <span style={{ fontSize: '0.78rem', color: source === 'supabase' ? '#1e8449' : 'var(--steel)' }}>
+              Sumber Data: {source === 'supabase' ? 'Database Supabase (public.furnitures)' : 'Penyimpanan Lokal (LocalStorage)'}
+            </span>
+          </div>
           <div className="list-head-right">
+            <button
+              type="button"
+              className="btn btn--outline btn--sm"
+              onClick={refetch}
+              title="Muat ulang dari database Supabase"
+            >
+              <RefreshCw size={14} className={loading ? 'spin' : ''} /> Segarkan
+            </button>
             <button
               type="button"
               className="btn btn--outline btn--sm"
@@ -115,7 +129,7 @@ export default function CatalogPage({ onNavigate }) {
         {loading && (
           <div className="state-box">
             <Loader size={28} className="spin" />
-            <p>Memuat katalog furniture…</p>
+            <p>Memuat katalog furniture dari database…</p>
           </div>
         )}
 
@@ -144,7 +158,7 @@ export default function CatalogPage({ onNavigate }) {
       <ConfirmModal
         open={Boolean(deleteTarget)}
         title="Hapus Produk Furniture"
-        message={`Apakah Anda yakin ingin menghapus "${deleteTarget?.name}" dari katalog?`}
+        message={`Apakah Anda yakin ingin menghapus "${deleteTarget?.name}" dari database katalog?`}
         confirmLabel="Hapus Produk"
         cancelLabel="Batal"
         danger

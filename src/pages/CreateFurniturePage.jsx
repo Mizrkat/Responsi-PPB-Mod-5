@@ -37,15 +37,15 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
     name: '',
     type: 'Kursi',
     caliber: 'Kayu Jati Solid Grade A',
-    difficulty: 'sedang',
+    difficulty: 'Siap Pakai (Fully Assembled)',
     price: 4200000,
     description: '',
     is_featured: false,
   })
 
   const [imageFile, setImageFile] = useState(null)
-  const [imagePreview, setImagePreview] = useState(null)
-  const [uploadedImageUrl, setUploadedImageUrl] = useState('')
+  const [imagePreview, setImagePreview] = useState('/furniture/chair.jpg')
+  const [uploadedImageUrl, setUploadedImageUrl] = useState('/furniture/chair.jpg')
 
   const [specs, setSpecs] = useState([
     { name: 'Dimensi (P x L x T)', quantity: '75 x 80 x 78 cm' },
@@ -114,10 +114,11 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
   }
 
   const handleImageChange = (e) => {
-    const file = e.target.files[0]
+    const file = e.target.files?.[0]
     if (!file) return
     setImageFile(file)
     setImagePreview(URL.createObjectURL(file))
+    setUploadedImageUrl('')
     setError('')
   }
 
@@ -131,25 +132,28 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
 
   const handleUploadImage = async () => {
     if (!imageFile) {
-      if (uploadedImageUrl || imagePreview) {
-        setUploadedImageUrl(uploadedImageUrl || imagePreview)
-        setCurrentStep('form')
-        return
-      }
-      setError('Pilih foto produk atau gunakan foto preset terlebih dahulu.')
+      setUploadedImageUrl(uploadedImageUrl || imagePreview || '/furniture/chair.jpg')
+      setCurrentStep('form')
       return
     }
     try {
       setUploading(true)
       setError('')
-      const result = await uploadService.uploadImage(imageFile)
+      const result = await uploadService.uploadImage(imageFile, 'furnitures', 'products')
       if (result.success && result.data?.url) {
         setUploadedImageUrl(result.data.url)
+        setImagePreview(result.data.url)
+        setImageFile(null)
         setCurrentStep('form')
+        setSuccessMsg(
+          result.source === 'supabase_storage'
+            ? 'Foto berhasil diunggah ke Supabase Storage Bucket (furnitures)!'
+            : 'Foto berhasil diproses!',
+        )
+        setTimeout(() => setSuccessMsg(''), 3000)
       }
     } catch (err) {
-      setUploadedImageUrl(imagePreview || '/furniture/chair.jpg')
-      setCurrentStep('form')
+      setError(err.message || 'Gagal mengunggah gambar.')
     } finally {
       setUploading(false)
     }
@@ -211,20 +215,43 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
 
     try {
       setCreating(true)
+
+      // Jika pengguna memilih file gambar tetapi belum menekan tombol upload di Step 1, unggah otomatis sekarang
+      let finalImageUrl = uploadedImageUrl
+      if (imageFile) {
+        const upRes = await uploadService.uploadImage(imageFile, 'furnitures', 'products')
+        if (upRes.success && upRes.data?.url) {
+          finalImageUrl = upRes.data.url
+        }
+      }
+      if (!finalImageUrl || String(finalImageUrl).startsWith('blob:')) {
+        finalImageUrl = '/furniture/chair.jpg'
+      }
+
       const response = await furnitureService.createFurniture({
-        ...formData,
+        name: formData.name.trim(),
+        category: formData.type,
+        type: formData.type,
+        material: formData.caliber.trim(),
+        caliber: formData.caliber.trim(),
+        assembly_type: formData.difficulty,
+        difficulty: formData.difficulty,
         price: Number(formData.price) || 1500000,
-        image_url: uploadedImageUrl || imagePreview || '/furniture/chair.jpg',
+        description: formData.description.trim(),
+        is_featured: Boolean(formData.is_featured),
+        image_url: finalImageUrl,
+        specs: cleanSpecs,
         ingredients: cleanSpecs,
         steps: cleanSteps,
       })
+
       if (response.success) {
         deleteDraft('create')
         if (onSuccess) onSuccess(response.data)
         else if (onBack) onBack()
       }
     } catch (err) {
-      setError(err.message || 'Gagal menyimpan produk furniture.')
+      setError(err.message || 'Gagal menyimpan produk furniture ke database.')
     } finally {
       setCreating(false)
     }
@@ -248,9 +275,9 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
       </div>
 
       <div className="form-title-group">
-        <h1 className="display">Tambah Koleksi Furniture Baru</h1>
+        <h1 className="display">Tambah Koleksi Furniture Baru (Create CRUD)</h1>
         <p className="lede">
-          Tambahkan produk baru ke dalam inventaris toko. Mendukung upload foto, penyimpanan draft otomatis, dan sinkronisasi API/Offline.
+          Produk baru akan langsung disimpan ke tabel <code>public.furnitures</code> dan foto diunggah ke Storage Bucket <code>furnitures</code> di Supabase.
         </p>
       </div>
 
@@ -266,68 +293,67 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
       )}
 
       <div className="form-steps-nav">
-        <div className={`step-badge ${currentStep === 'upload' ? 'step-badge--active' : 'step-badge--done'}`}>
+        <button
+          type="button"
+          onClick={() => setCurrentStep('upload')}
+          className={`step-badge ${currentStep === 'upload' ? 'step-badge--active' : 'step-badge--done'}`}
+          style={{ cursor: 'pointer' }}
+        >
           1. Foto Produk Furniture
-        </div>
+        </button>
         <div className="step-badge-connector" />
-        <div className={`step-badge ${currentStep === 'form' ? 'step-badge--active' : ''}`}>
+        <button
+          type="button"
+          onClick={() => setCurrentStep('form')}
+          className={`step-badge ${currentStep === 'form' ? 'step-badge--active' : ''}`}
+          style={{ cursor: 'pointer' }}
+        >
           2. Spesifikasi &amp; Detail Harga
-        </div>
+        </button>
       </div>
 
       {currentStep === 'upload' && (
         <div className="card-box">
-          <h2 className="card-box-title">Unggah Foto Furniture</h2>
+          <h2 className="card-box-title">Unggah Foto ke Supabase Storage Bucket</h2>
           <p className="card-box-desc">
-            Unggah foto produk (JPG/PNG/WebP maks. 5MB) atau pilih preset foto studio di bawah ini.
+            Unggah foto produk (JPG/PNG/WebP maks. 5MB) ke bucket <code>furnitures</code> atau pilih preset foto studio di bawah ini.
           </p>
 
-          {!imagePreview ? (
-            <div className="upload-dropzone">
-              <input
-                id="furniture-image-input"
-                type="file"
-                accept="image/jpeg,image/jpg,image/png,image/webp"
-                onChange={handleImageChange}
-                className="hidden-file-input"
-              />
-              <label htmlFor="furniture-image-input" className="upload-label">
-                <Upload size={36} className="upload-icon" />
-                <span className="upload-main-text">Klik untuk memilih file foto dari perangkat</span>
-                <span className="upload-sub-text">Mendukung penyimpanan Base64 saat offline</span>
-              </label>
+          <div className="upload-dropzone" style={{ marginBottom: 18 }}>
+            <input
+              id="furniture-image-input"
+              type="file"
+              accept="image/jpeg,image/jpg,image/png,image/webp"
+              onChange={handleImageChange}
+              className="hidden-file-input"
+            />
+            <label htmlFor="furniture-image-input" className="upload-label">
+              <Upload size={36} className="upload-icon" />
+              <span className="upload-main-text">Klik untuk memilih file foto dari perangkat</span>
+              <span className="upload-sub-text">Akan diunggah otomatis ke Supabase Storage Bucket (furnitures)</span>
+            </label>
 
-              <div className="preset-selector">
-                <span className="preset-title">Atau pilih preset studio Kayu &amp; Ruang:</span>
-                <div className="preset-pills">
-                  {PRESET_IMAGES.map((preset) => (
-                    <button
-                      key={preset.url}
-                      type="button"
-                      className="pill"
-                      onClick={() => handleSelectPreset(preset.url)}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
+            <div className="preset-selector">
+              <span className="preset-title">Atau klik salah satu preset studio Kayu &amp; Ruang:</span>
+              <div className="preset-pills">
+                {PRESET_IMAGES.map((preset) => (
+                  <button
+                    key={preset.url}
+                    type="button"
+                    className={`pill ${imagePreview === preset.url ? 'pill--active' : ''}`}
+                    onClick={() => handleSelectPreset(preset.url)}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
               </div>
             </div>
-          ) : (
+          </div>
+
+          {imagePreview && (
             <div className="preview-container">
               <div className="preview-image-wrap">
                 <img src={imagePreview} alt="Preview Furniture" className="preview-img" />
-                <button
-                  type="button"
-                  className="preview-remove-btn"
-                  onClick={() => {
-                    setImageFile(null)
-                    setImagePreview(null)
-                    setUploadedImageUrl('')
-                  }}
-                >
-                  <X size={18} />
-                </button>
               </div>
               <div className="preview-actions">
                 <button
@@ -338,11 +364,11 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
                 >
                   {uploading ? (
                     <>
-                      <Loader size={18} className="spin" /> Memproses Gambar…
+                      <Loader size={18} className="spin" /> Mengunggah ke Supabase Storage…
                     </>
                   ) : (
                     <>
-                      <Upload size={18} /> Gunakan Foto Ini &amp; Lanjutkan
+                      <Upload size={18} /> Gunakan Foto Ini &amp; Lanjut ke Form Detail
                     </>
                   )}
                 </button>
@@ -355,10 +381,16 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
       {currentStep === 'form' && (
         <form onSubmit={handleSubmit} className="entry-form">
           <div className="selected-thumb-bar">
-            <img src={uploadedImageUrl || imagePreview} alt="Selected" className="thumb-small" />
+            <img
+              src={uploadedImageUrl || imagePreview || '/furniture/chair.jpg'}
+              alt="Selected"
+              className="thumb-small"
+            />
             <div className="thumb-info">
               <span className="thumb-title">Foto Produk Terpilih</span>
-              <span className="thumb-sub">Siap disimpan ke katalog</span>
+              <span className="thumb-sub">
+                {imageFile ? `File siap diunggah: ${imageFile.name}` : 'Siap disimpan ke tabel public.furnitures'}
+              </span>
             </div>
             <button
               type="button"
@@ -445,9 +477,9 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
                 onChange={handleFormChange}
                 className="form-select"
               >
-                <option value="mudah">Siap Pakai (Fully Assembled)</option>
-                <option value="sedang">Knockdown Mudah (15 Menit)</option>
-                <option value="sulit">Custom / Instalasi Tim</option>
+                <option value="Siap Pakai (Fully Assembled)">Siap Pakai (Fully Assembled)</option>
+                <option value="Knockdown Mudah (15 Menit)">Knockdown Mudah (15 Menit)</option>
+                <option value="Custom / Instalasi Tim">Custom / Instalasi Tim</option>
               </select>
             </div>
           </div>
@@ -536,7 +568,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
               Batal
             </button>
             <button type="submit" className="btn btn--primary" disabled={creating}>
-              {creating ? 'Menyimpan…' : 'Simpan Produk ke Katalog'}
+              {creating ? 'Menyimpan ke Database…' : 'Simpan Produk ke Database'}
             </button>
           </div>
         </form>

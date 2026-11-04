@@ -2,22 +2,87 @@ import axios from 'axios'
 
 // ---------------------------------------------------------------------------
 // Base URL & Supabase Publishable Key Configuration
-// Hanya menggunakan 2 variabel dari .env:
-//   - VITE_API_BASE_URL
-//   - VITE_SUPABASE_PUBLISHABLE_KEY
+// Membaca VITE_API_BASE_URL dan VITE_SUPABASE_PUBLISHABLE_KEY dari .env,
+// membersihkan tanda kutip / trailing slash, serta mendukung runtime config.
 // ---------------------------------------------------------------------------
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || ''
+const ENV_OVERRIDE_KEY = 'kayu_ruang_supabase_env_override'
 
-const IS_SUPABASE =
-  Boolean(BASE_URL && SUPABASE_KEY) &&
-  !BASE_URL.includes('YOUR_PROJECT_ID')
+const cleanEnvVal = (val) =>
+  String(val || '')
+    .trim()
+    .replace(/^['"]+|['"]+$/g, '')
+    .trim()
 
-if (!IS_SUPABASE) {
-  console.warn(
-    '[api] VITE_API_BASE_URL atau VITE_SUPABASE_PUBLISHABLE_KEY belum diisi dengan project Supabase aktif. Menggunakan fallback LocalStorage.',
+export const getSupabaseConfig = () => {
+  const envUrl = cleanEnvVal(
+    import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_SUPABASE_URL || '',
+  ).replace(/\/+$/, '')
+
+  const envKey = cleanEnvVal(
+    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+      import.meta.env.VITE_SUPABASE_ANON_KEY ||
+      import.meta.env.VITE_SUPABASE_KEY ||
+      '',
+  )
+
+  try {
+    const raw = localStorage.getItem(ENV_OVERRIDE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      const overrideUrl = cleanEnvVal(parsed.VITE_API_BASE_URL).replace(/\/+$/, '')
+      const overrideKey = cleanEnvVal(parsed.VITE_SUPABASE_PUBLISHABLE_KEY)
+      if (
+        overrideUrl &&
+        overrideKey &&
+        !overrideUrl.includes('YOUR_PROJECT_ID') &&
+        !overrideKey.includes('YOUR_SUPABASE')
+      ) {
+        return { baseUrl: overrideUrl, supabaseKey: overrideKey }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return { baseUrl: envUrl, supabaseKey: envKey }
+}
+
+export const saveSupabaseConfigOverride = (url, key) => {
+  try {
+    localStorage.setItem(
+      ENV_OVERRIDE_KEY,
+      JSON.stringify({
+        VITE_API_BASE_URL: cleanEnvVal(url).replace(/\/+$/, ''),
+        VITE_SUPABASE_PUBLISHABLE_KEY: cleanEnvVal(key),
+      }),
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+export const clearSupabaseConfigOverride = () => {
+  try {
+    localStorage.removeItem(ENV_OVERRIDE_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+export const isSupabaseConfigured = () => {
+  const { baseUrl, supabaseKey } = getSupabaseConfig()
+  return (
+    Boolean(baseUrl && supabaseKey) &&
+    !baseUrl.includes('YOUR_PROJECT_ID') &&
+    !supabaseKey.includes('YOUR_SUPABASE')
   )
 }
+
+const initialCfg = getSupabaseConfig()
+const BASE_URL = initialCfg.baseUrl
+const SUPABASE_KEY = initialCfg.supabaseKey
+const IS_SUPABASE = isSupabaseConfigured()
 
 // ---------------------------------------------------------------------------
 // Axios instance
@@ -27,19 +92,21 @@ const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 10000, // 10 seconds
+  timeout: 15000, // 15 seconds
 })
 
 // ---------------------------------------------------------------------------
-// Request interceptor — attach Supabase headers (apikey & Bearer auth)
+// Request interceptor — attach dynamic Supabase baseURL, apikey, & Bearer auth
 // ---------------------------------------------------------------------------
 apiClient.interceptors.request.use(
   (config) => {
-    if (IS_SUPABASE && SUPABASE_KEY) {
-      config.headers['apikey'] = SUPABASE_KEY
-      if (!config.headers['Authorization']) {
-        config.headers['Authorization'] = `Bearer ${SUPABASE_KEY}`
-      }
+    const { baseUrl, supabaseKey } = getSupabaseConfig()
+    if (baseUrl && !baseUrl.includes('YOUR_PROJECT_ID')) {
+      config.baseURL = baseUrl
+    }
+    if (supabaseKey && !supabaseKey.includes('YOUR_SUPABASE')) {
+      config.headers['apikey'] = supabaseKey
+      config.headers['Authorization'] = `Bearer ${supabaseKey}`
     }
     return config
   },
@@ -58,6 +125,8 @@ apiClient.interceptors.response.use(
       status = error.response.status
       message =
         error.response.data?.message ||
+        error.response.data?.details ||
+        error.response.data?.hint ||
         error.response.data?.msg ||
         error.response.data?.error ||
         error.response.data?.error_description ||

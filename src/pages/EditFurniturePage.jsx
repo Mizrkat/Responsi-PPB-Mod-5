@@ -1,23 +1,39 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Plus, X, Save, CheckCircle, AlertCircle } from 'lucide-react'
+import {
+  ArrowLeft,
+  Plus,
+  X,
+  Save,
+  Upload,
+  Loader,
+  CheckCircle,
+  AlertCircle,
+} from 'lucide-react'
 import furnitureService from '../services/furnitureService'
+import uploadService from '../services/uploadService'
 
 export default function EditFurniturePage({ furniture, furnitureId, onBack, onSuccess }) {
   const targetId = furnitureId || furniture?.id
 
   const [formData, setFormData] = useState({
     name: furniture?.name || '',
-    type: furniture?.type || 'Kursi',
-    caliber: furniture?.caliber || 'Kayu Jati Solid',
-    difficulty: furniture?.difficulty || 'sedang',
+    type: furniture?.category || furniture?.type || 'Kursi',
+    caliber: furniture?.material || furniture?.caliber || 'Kayu Jati Solid',
+    difficulty:
+      furniture?.assembly_type ||
+      furniture?.difficulty ||
+      'Siap Pakai (Fully Assembled)',
     price: furniture?.price ?? 3500000,
     description: furniture?.description || '',
     image_url: furniture?.image_url || '/furniture/chair.jpg',
+    is_featured: Boolean(furniture?.is_featured),
   })
 
   const [specs, setSpecs] = useState(
     furniture?.ingredients?.length > 0
       ? furniture.ingredients
+      : furniture?.specs?.length > 0
+      ? furniture.specs
       : [{ name: 'Dimensi', quantity: 'Standar' }],
   )
   const [steps, setSteps] = useState(
@@ -26,6 +42,7 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
       : ['Bersihkan menggunakan kain kering lembut.'],
   )
 
+  const [uploading, setUploading] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
@@ -37,12 +54,13 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
           const d = res.data
           setFormData({
             name: d.name,
-            type: d.type,
-            caliber: d.caliber,
-            difficulty: d.difficulty || 'sedang',
+            type: d.category || d.type,
+            caliber: d.material || d.caliber,
+            difficulty: d.assembly_type || d.difficulty || 'Siap Pakai (Fully Assembled)',
             price: d.price,
             description: d.description,
             image_url: d.image_url,
+            is_featured: Boolean(d.is_featured),
           })
           if (d.ingredients?.length) setSpecs(d.ingredients)
           if (d.steps?.length) setSteps(d.steps)
@@ -50,6 +68,29 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
       })
     }
   }, [furniture, targetId])
+
+  const handleImageFileChange = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      setUploading(true)
+      setError('')
+      const res = await uploadService.uploadImage(file, 'furnitures', 'products')
+      if (res.success && res.data?.url) {
+        setFormData((p) => ({ ...p, image_url: res.data.url }))
+        setSuccessMsg(
+          res.source === 'supabase_storage'
+            ? 'Foto baru berhasil diunggah ke Supabase Storage Bucket!'
+            : 'Foto baru berhasil dimuat!',
+        )
+        setTimeout(() => setSuccessMsg(''), 3000)
+      }
+    } catch (err) {
+      setError(err.message || 'Gagal mengunggah foto baru.')
+    } finally {
+      setUploading(false)
+    }
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -59,14 +100,30 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
     }
     try {
       setUpdating(true)
+      setError('')
+      const cleanSpecs = specs
+        .filter((s) => s.name && s.name.trim())
+        .map((s) => ({ name: s.name.trim(), quantity: (s.quantity || 'Standar').trim() }))
+      const cleanSteps = steps.filter((s) => s && s.trim()).map((s) => s.trim())
+
       const res = await furnitureService.updateFurniture(targetId, {
-        ...formData,
+        name: formData.name.trim(),
+        category: formData.type,
+        type: formData.type,
+        material: formData.caliber.trim(),
+        caliber: formData.caliber.trim(),
+        assembly_type: formData.difficulty,
+        difficulty: formData.difficulty,
         price: Number(formData.price) || 0,
-        ingredients: specs.filter((s) => s.name.trim()),
-        steps: steps.filter((s) => s.trim()),
+        description: formData.description.trim(),
+        image_url: formData.image_url,
+        is_featured: Boolean(formData.is_featured),
+        specs: cleanSpecs,
+        ingredients: cleanSpecs,
+        steps: cleanSteps,
       })
       if (res.success) {
-        setSuccessMsg('Perubahan berhasil disimpan!')
+        setSuccessMsg('Perubahan berhasil disimpan ke database!')
         if (onSuccess) onSuccess(res.data)
         else if (onBack) onBack()
       }
@@ -86,9 +143,9 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
       </div>
 
       <div className="form-title-group">
-        <h1 className="display">Edit Data Furniture</h1>
+        <h1 className="display">Edit Data Furniture (Update CRUD)</h1>
         <p className="lede">
-          Memperbarui produk ID: <code className="mono-badge">{targetId}</code>
+          Memperbarui produk ID: <code className="mono-badge">{targetId}</code> pada tabel <code>public.furnitures</code>
         </p>
       </div>
 
@@ -104,6 +161,33 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
       )}
 
       <form onSubmit={handleSubmit} className="entry-form">
+        {/* Foto Produk & Upload ke Storage Bucket */}
+        <div className="selected-thumb-bar">
+          <img src={formData.image_url} alt={formData.name} className="thumb-small" />
+          <div className="thumb-info">
+            <span className="thumb-title">Foto Produk Saat Ini</span>
+            <span className="thumb-sub">Unggah foto baru untuk menyimpan ke Supabase Storage Bucket</span>
+          </div>
+          <label className="btn btn--outline btn--sm" style={{ cursor: 'pointer' }}>
+            {uploading ? (
+              <>
+                <Loader size={14} className="spin" /> Mengunggah…
+              </>
+            ) : (
+              <>
+                <Upload size={14} /> Ganti Foto
+              </>
+            )}
+            <input
+              type="file"
+              accept="image/jpeg,image/jpg,image/png,image/webp"
+              onChange={handleImageFileChange}
+              className="hidden-file-input"
+              disabled={uploading}
+            />
+          </label>
+        </div>
+
         <div className="form-grid">
           <div className="form-group">
             <label className="form-label">Nama Produk Furniture *</label>
@@ -132,7 +216,7 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
           </div>
         </div>
 
-        <div className="form-grid">
+        <div className="form-grid form-grid--3">
           <div className="form-group">
             <label className="form-label">Material Kayu &amp; Kain *</label>
             <input
@@ -152,6 +236,18 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
               className="form-input"
               required
             />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Tingkat Perakitan</label>
+            <select
+              value={formData.difficulty}
+              onChange={(e) => setFormData((p) => ({ ...p, difficulty: e.target.value }))}
+              className="form-select"
+            >
+              <option value="Siap Pakai (Fully Assembled)">Siap Pakai (Fully Assembled)</option>
+              <option value="Knockdown Mudah (15 Menit)">Knockdown Mudah (15 Menit)</option>
+              <option value="Custom / Instalasi Tim">Custom / Instalasi Tim</option>
+            </select>
           </div>
         </div>
 
@@ -212,12 +308,50 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
           </div>
         </div>
 
+        <div className="form-fieldset">
+          <div className="fieldset-header">
+            <label className="form-label">Panduan Perakitan &amp; Perawatan</label>
+            <button
+              type="button"
+              className="btn btn--outline btn--sm"
+              onClick={() => setSteps((p) => [...p, ''])}
+            >
+              <Plus size={14} /> Tambah Langkah
+            </button>
+          </div>
+          <div className="multi-rows">
+            {steps.map((st, i) => (
+              <div key={i} className="step-row">
+                <span className="step-num">{i + 1}</span>
+                <input
+                  type="text"
+                  value={st}
+                  onChange={(e) => {
+                    const copy = [...steps]
+                    copy[i] = e.target.value
+                    setSteps(copy)
+                  }}
+                  className="form-input"
+                />
+                <button
+                  type="button"
+                  className="btn btn--danger-ghost"
+                  onClick={() => setSteps((p) => p.filter((_, idx) => idx !== i))}
+                  disabled={steps.length <= 1}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div className="form-actions-bar">
           <button type="button" className="btn btn--outline" onClick={onBack}>
             Batal
           </button>
           <button type="submit" className="btn btn--primary" disabled={updating}>
-            <Save size={16} /> {updating ? 'Menyimpan…' : 'Simpan Perubahan'}
+            <Save size={16} /> {updating ? 'Menyimpan ke Database…' : 'Simpan Perubahan'}
           </button>
         </div>
       </form>

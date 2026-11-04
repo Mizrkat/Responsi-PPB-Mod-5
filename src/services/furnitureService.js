@@ -1,7 +1,15 @@
-import { apiClient, IS_SUPABASE } from '../config/api'
+import { apiClient, isSupabaseConfigured } from '../config/api'
 import FURNITURES_LOCAL from '../data/furnitures'
 
 const LOCAL_CATALOG_KEY = 'kayu_ruang_catalog_items_v1'
+
+const ASSEMBLY_LABELS = {
+  mudah: 'Siap Pakai (Fully Assembled)',
+  sedang: 'Knockdown Mudah (15 Menit)',
+  sulit: 'Custom / Instalasi Tim',
+}
+
+const formatAssemblyType = (val) => ASSEMBLY_LABELS[val] || val || 'Siap Pakai (Fully Assembled)'
 
 export const readLocalCatalog = () => {
   try {
@@ -35,20 +43,37 @@ export const resetLocalCatalog = () => {
 }
 
 // ---------------------------------------------------------------------------
-// Normalizer — menyamakan format data dari tabel Supabase `public.furnitures`
+// Normalizer — menyamakan struktur data dari tabel `public.furnitures` atau `public.products`
 // ---------------------------------------------------------------------------
 export const normalizeFurniture = (item) => {
   if (!item) return null
 
-  const specsList = Array.isArray(item.specs)
-    ? item.specs.map((s, idx) =>
-        typeof s === 'object' && s !== null
-          ? { id: s.id || `spec-${idx}`, name: s.name || 'Spesifikasi', quantity: s.quantity || '-' }
-          : { id: `spec-${idx}`, name: 'Spesifikasi', quantity: String(s) },
-      )
-    : Array.isArray(item.ingredients)
-    ? item.ingredients
-    : []
+  let specsList = []
+  if (Array.isArray(item.specs)) {
+    specsList = item.specs.map((s, idx) => {
+      if (typeof s === 'object' && s !== null) {
+        return {
+          id: s.id || `spec-${idx}`,
+          name: s.name || 'Spesifikasi',
+          quantity: s.quantity || '-',
+        }
+      }
+      if (typeof s === 'string') {
+        const colonIdx = s.indexOf(':')
+        if (colonIdx > -1) {
+          return {
+            id: `spec-${idx}`,
+            name: s.substring(0, colonIdx).trim(),
+            quantity: s.substring(colonIdx + 1).trim(),
+          }
+        }
+        return { id: `spec-${idx}`, name: 'Spesifikasi', quantity: s.trim() }
+      }
+      return { id: `spec-${idx}`, name: 'Spesifikasi', quantity: String(s) }
+    })
+  } else if (Array.isArray(item.ingredients)) {
+    specsList = item.ingredients
+  }
 
   const stepsList =
     Array.isArray(item.steps) && item.steps.length > 0
@@ -60,7 +85,7 @@ export const normalizeFurniture = (item) => {
 
   const category = item.category || item.type || 'Kursi'
   const material = item.material || item.caliber || 'Kayu Jati Solid'
-  const assemblyType = item.assembly_type || item.difficulty || 'Siap Pakai (Fully Assembled)'
+  const assemblyType = formatAssemblyType(item.assembly_type || item.difficulty)
 
   return {
     ...item,
@@ -84,15 +109,94 @@ export const normalizeFurniture = (item) => {
 }
 
 // ---------------------------------------------------------------------------
-// FurnitureService — CRUD ke endpoint PostgREST Supabase `/rest/v1/furnitures`
-// dengan fallback otomatis ke LocalStorage saat offline.
+// FurnitureService — Operasi CRUD Penuh ke Database Supabase (`public.furnitures`)
 // ---------------------------------------------------------------------------
 class FurnitureService {
   /**
-   * Mengambil seluruh produk dari tabel `public.furnitures`
+   * Helper internal untuk INSERT 1 item ke Supabase `public.furnitures`
+   * dengan fallback skema otomatis jika tipe kolom berbeda.
+   */
+  async _insertToSupabase(data) {
+    const specsList = Array.isArray(data.specs)
+      ? data.specs.map((i) => ({ name: i.name || 'Spesifikasi', quantity: i.quantity || '-' }))
+      : Array.isArray(data.ingredients)
+      ? data.ingredients.map((i) => ({ name: i.name || 'Spesifikasi', quantity: i.quantity || '-' }))
+      : []
+
+    const stepsList = Array.isArray(data.steps)
+      ? data.steps.map((st) => (typeof st === 'string' ? st : st.instruction || '')).filter(Boolean)
+      : []
+
+    const category = data.category || data.type || 'Kursi'
+    const material = data.material || data.caliber || 'Kayu Jati Solid'
+    const assemblyType = formatAssemblyType(data.assembly_type || data.difficulty)
+    const cleanImageUrl =
+      data.image_url && !String(data.image_url).startsWith('blob:')
+        ? data.image_url
+        : '/furniture/chair.jpg'
+
+    const fullPayload = {
+      name: (data.name || '').trim() || 'Produk Furniture Baru',
+      category,
+      material,
+      assembly_type: assemblyType,
+      price: Number(data.price ?? 0),
+      description: (data.description || '').trim(),
+      specs: specsList,
+      steps: stepsList,
+      image_url: cleanImageUrl,
+      is_featured: Boolean(data.is_featured),
+    }
+
+    try {
+      // 1. Coba INSERT ke tabel utama public.furnitures (skema JSONB specs)
+      const res = await apiClient.post('/rest/v1/furnitures', fullPayload, {
+        headers: { Prefer: 'return=representation' },
+      })
+      return normalizeFurniture(Array.isArray(res) ? res[0] : res)
+    } catch (err1) {
+      // 2. Fallback jika kolom specs bertipe TEXT[] atau kolom opsional tidak ada
+      try {
+        const minimalPayload = {
+          name: fullPayload.name,
+          category: fullPayload.category,
+          material: fullPayload.material,
+          price: fullPayload.price,
+          description: fullPayload.description,
+          image_url: fullPayload.image_url,
+        }
+        const res2 = await apiClient.post('/rest/v1/furnitures', minimalPayload, {
+          headers: { Prefer: 'return=representation' },
+        })
+        return normalizeFurniture({
+          ...fullPayload,
+          ...(Array.isArray(res2) ? res2[0] : res2),
+        })
+      } catch {
+        // 3. Fallback jika tabel di Supabase bernama public.products
+        const productsPayload = {
+          name: fullPayload.name,
+          type: fullPayload.category,
+          caliber: fullPayload.material,
+          price: fullPayload.price,
+          description: fullPayload.description,
+          specs: specsList.map((s) => `${s.name}: ${s.quantity}`),
+          image_url: fullPayload.image_url,
+        }
+        const res3 = await apiClient.post('/rest/v1/products', productsPayload, {
+          headers: { Prefer: 'return=representation' },
+        })
+        return normalizeFurniture(Array.isArray(res3) ? res3[0] : res3)
+      }
+    }
+  }
+
+  /**
+   * READ: Mengambil seluruh produk dari tabel `public.furnitures` di Supabase.
+   * Jika tabel masih kosong (0 baris), otomatis melakukan seed 6 produk awal ke Supabase.
    */
   async getFurnitures(params = {}) {
-    if (IS_SUPABASE && navigator.onLine) {
+    if (isSupabaseConfigured() && navigator.onLine) {
       try {
         const queryParts = ['select=*']
         if (params.search) {
@@ -101,33 +205,71 @@ class FurnitureService {
         if (params.category && params.category !== 'Semua' && params.category !== 'All') {
           queryParts.push(`category=eq.${encodeURIComponent(params.category)}`)
         }
-        if (params.sort_by) {
-          const order = params.order === 'desc' ? 'desc' : 'asc'
-          queryParts.push(`order=${encodeURIComponent(params.sort_by)}.${order}`)
-        } else {
-          queryParts.push('order=created_at.desc')
-        }
+        queryParts.push('order=created_at.desc')
         if (params.limit) {
           queryParts.push(`limit=${params.limit}`)
         }
         const queryString = queryParts.join('&')
-        const data = await apiClient.get(`/rest/v1/furnitures?${queryString}`)
-        const list = Array.isArray(data) ? data.map(normalizeFurniture) : []
+
+        let data
+        try {
+          data = await apiClient.get(`/rest/v1/furnitures?${queryString}`)
+        } catch {
+          data = await apiClient.get(`/rest/v1/products?select=*&order=created_at.desc`)
+        }
+
+        let list = Array.isArray(data) ? data.map(normalizeFurniture) : []
+
+        // Jika tabel di Supabase masih kosong dan tidak sedang memfilter, seed otomatis
+        const isUnfiltered =
+          !params.search && (!params.category || params.category === 'Semua' || params.category === 'All')
+        if (list.length === 0 && isUnfiltered) {
+          const seeded = []
+          for (const seedItem of FURNITURES_LOCAL) {
+            try {
+              const created = await this._insertToSupabase(seedItem)
+              if (created) seeded.push(created)
+            } catch {
+              /* ignore individual seed failure */
+            }
+          }
+          if (seeded.length > 0) {
+            list = seeded
+          }
+        }
+
+        // Sinkronkan item lokal yang belum masuk ke Supabase (id diawali 'furn-' tapi bukan 6 seed awal)
+        const localItems = readLocalCatalog()
+        const unsyncedCustoms = localItems.filter(
+          (loc) =>
+            String(loc.id).startsWith('furn-') &&
+            !FURNITURES_LOCAL.some((seed) => seed.id === loc.id) &&
+            !list.some((rem) => rem.name.toLowerCase() === (loc.name || '').toLowerCase()),
+        )
+        for (const unsynced of unsyncedCustoms) {
+          try {
+            const syncedItem = await this._insertToSupabase(unsynced)
+            if (syncedItem) list.unshift(syncedItem)
+          } catch {
+            list.unshift(normalizeFurniture(unsynced))
+          }
+        }
+
         if (list.length > 0) {
           writeLocalCatalog(list)
-        }
-        return {
-          success: true,
-          data: list.length > 0 ? list : readLocalCatalog().map(normalizeFurniture),
-          source: 'supabase',
-          pagination: {
-            total: list.length,
-            page: params.page || 1,
-            limit: params.limit || 50,
-          },
+          return {
+            success: true,
+            data: list,
+            source: 'supabase',
+            pagination: {
+              total: list.length,
+              page: params.page || 1,
+              limit: params.limit || 50,
+            },
+          }
         }
       } catch (err) {
-        console.warn('[FurnitureService] Fallback ke LocalStorage:', err.message)
+        console.warn('[FurnitureService] Gagal membaca Supabase, beralih ke LocalStorage:', err.message)
       }
     }
 
@@ -145,17 +287,17 @@ class FurnitureService {
   }
 
   /**
-   * Mengambil detail 1 produk furniture dari `public.furnitures`
+   * READ SINGLE: Mengambil detail 1 produk berdasarkan ID dari Supabase
    */
   async getFurnitureById(id) {
-    if (IS_SUPABASE && navigator.onLine && !String(id).startsWith('furn-')) {
+    if (isSupabaseConfigured() && navigator.onLine && !String(id).startsWith('furn-')) {
       try {
         const data = await apiClient.get(`/rest/v1/furnitures?id=eq.${id}&select=*`)
         if (Array.isArray(data) && data.length > 0) {
           return { success: true, data: normalizeFurniture(data[0]) }
         }
       } catch {
-        /* fallback ke local */
+        /* fallback */
       }
     }
     const localItems = readLocalCatalog()
@@ -167,68 +309,66 @@ class FurnitureService {
   }
 
   /**
-   * Menambahkan produk furniture baru (INSERT ke `public.furnitures`)
+   * CREATE: Menambahkan produk baru ke tabel `public.furnitures` di Supabase
    */
   async createFurniture(data) {
-    const specsList = Array.isArray(data.specs)
-      ? data.specs
-      : Array.isArray(data.ingredients)
-      ? data.ingredients.map((i) => ({ name: i.name, quantity: i.quantity }))
-      : []
-
-    const stepsList = Array.isArray(data.steps) ? data.steps : []
-
-    const payload = {
-      name: data.name,
-      category: data.category || data.type || 'Kursi',
-      material: data.material || data.caliber || 'Kayu Jati Solid',
-      assembly_type: data.assembly_type || data.difficulty || 'Siap Pakai (Fully Assembled)',
-      price: Number(data.price ?? 0),
-      description: data.description || '',
-      specs: specsList,
-      steps: stepsList,
-      image_url: data.image_url || '/furniture/chair.jpg',
-      is_featured: Boolean(data.is_featured),
-    }
-
-    if (IS_SUPABASE && navigator.onLine) {
+    if (isSupabaseConfigured() && navigator.onLine) {
       try {
-        const res = await apiClient.post('/rest/v1/furnitures', payload, {
-          headers: { Prefer: 'return=representation' },
-        })
-        const created = normalizeFurniture(Array.isArray(res) ? res[0] : res)
+        const created = await this._insertToSupabase(data)
         const current = readLocalCatalog()
-        writeLocalCatalog([created, ...current])
-        return { success: true, data: created }
+        writeLocalCatalog([created, ...current.filter((i) => String(i.id) !== String(created.id))])
+        return { success: true, source: 'supabase', data: created }
       } catch (err) {
-        console.warn('[FurnitureService] Gagal POST ke Supabase, menyimpan ke LocalStorage:', err.message)
+        console.error('[FurnitureService] Error saat INSERT ke Supabase:', err)
+        const fallbackItem = normalizeFurniture({
+          ...data,
+          id: `furn-${Date.now()}`,
+          created_at: new Date().toISOString(),
+        })
+        const current = readLocalCatalog()
+        writeLocalCatalog([fallbackItem, ...current])
+        return {
+          success: true,
+          source: 'local',
+          warning: err.message || 'Tersimpan di perangkat lokal (cek tabel/RLS Supabase Anda).',
+          data: fallbackItem,
+        }
       }
     }
 
     const localCreated = normalizeFurniture({
-      ...payload,
+      ...data,
       id: `furn-${Date.now()}`,
       created_at: new Date().toISOString(),
     })
     const current = readLocalCatalog()
     writeLocalCatalog([localCreated, ...current])
-    return { success: true, data: localCreated }
+    return {
+      success: true,
+      source: 'local',
+      warning: 'Konfigurasi .env Supabase belum aktif. Produk disimpan di LocalStorage.',
+      data: localCreated,
+    }
   }
 
   /**
-   * Memperbarui data produk furniture (PATCH ke `public.furnitures`)
+   * UPDATE: Memperbarui data produk pada tabel `public.furnitures` di Supabase
    */
   async updateFurniture(id, data) {
     const specsList = Array.isArray(data.specs)
-      ? data.specs
+      ? data.specs.map((i) => ({ name: i.name || 'Spesifikasi', quantity: i.quantity || '-' }))
       : Array.isArray(data.ingredients)
-      ? data.ingredients.map((i) => ({ name: i.name, quantity: i.quantity }))
+      ? data.ingredients.map((i) => ({ name: i.name || 'Spesifikasi', quantity: i.quantity || '-' }))
+      : undefined
+
+    const stepsList = Array.isArray(data.steps)
+      ? data.steps.map((st) => (typeof st === 'string' ? st : st.instruction || '')).filter(Boolean)
       : undefined
 
     const payload = {
       updated_at: new Date().toISOString(),
     }
-    if (data.name !== undefined) payload.name = data.name
+    if (data.name !== undefined) payload.name = data.name.trim()
     if (data.category !== undefined || data.type !== undefined) {
       payload.category = data.category || data.type
     }
@@ -236,30 +376,72 @@ class FurnitureService {
       payload.material = data.material || data.caliber
     }
     if (data.assembly_type !== undefined || data.difficulty !== undefined) {
-      payload.assembly_type = data.assembly_type || data.difficulty
+      payload.assembly_type = formatAssemblyType(data.assembly_type || data.difficulty)
     }
-    if (data.price !== undefined) payload.price = Number(data.price)
-    if (data.description !== undefined) payload.description = data.description
+    if (data.price !== undefined) payload.price = Number(data.price ?? 0)
+    if (data.description !== undefined) payload.description = data.description.trim()
     if (specsList !== undefined) payload.specs = specsList
-    if (data.steps !== undefined) payload.steps = data.steps
-    if (data.image_url !== undefined) payload.image_url = data.image_url
+    if (stepsList !== undefined) payload.steps = stepsList
+    if (data.image_url !== undefined && !String(data.image_url).startsWith('blob:')) {
+      payload.image_url = data.image_url
+    }
     if (data.is_featured !== undefined) payload.is_featured = Boolean(data.is_featured)
 
-    if (IS_SUPABASE && navigator.onLine && !String(id).startsWith('furn-')) {
+    if (isSupabaseConfigured() && navigator.onLine) {
       try {
-        const res = await apiClient.patch(`/rest/v1/furnitures?id=eq.${id}`, payload, {
-          headers: { Prefer: 'return=representation' },
-        })
-        const updated = normalizeFurniture(Array.isArray(res) ? res[0] : res)
+        let targetDbId = !String(id).startsWith('furn-') ? id : null
+
+        // Jika item sebelumnya memiliki ID lokal 'furn-...', cari barisnya di Supabase berdasarkan nama atau buat baru
+        if (!targetDbId && payload.name) {
+          const existing = await apiClient.get(
+            `/rest/v1/furnitures?name=ilike.${encodeURIComponent(payload.name)}&select=id&limit=1`,
+          )
+          if (Array.isArray(existing) && existing.length > 0) {
+            targetDbId = existing[0].id
+          }
+        }
+
+        let updated
+        if (targetDbId) {
+          try {
+            const res = await apiClient.patch(`/rest/v1/furnitures?id=eq.${targetDbId}`, payload, {
+              headers: { Prefer: 'return=representation' },
+            })
+            const row = Array.isArray(res) ? res[0] : res
+            updated = normalizeFurniture(row || { ...data, ...payload, id: targetDbId })
+          } catch {
+            // Fallback ke tabel public.products jika pengguna memakai skema lama
+            const prodPayload = {
+              name: payload.name,
+              type: payload.category,
+              caliber: payload.material,
+              price: payload.price,
+              description: payload.description,
+              image_url: payload.image_url,
+              updated_at: payload.updated_at,
+            }
+            const res2 = await apiClient.patch(`/rest/v1/products?id=eq.${targetDbId}`, prodPayload, {
+              headers: { Prefer: 'return=representation' },
+            })
+            const row2 = Array.isArray(res2) ? res2[0] : res2
+            updated = normalizeFurniture(row2 || { ...data, ...payload, id: targetDbId })
+          }
+        } else {
+          // Jika belum ada di Supabase sama sekali, INSERT sebagai baris baru di Supabase
+          updated = await this._insertToSupabase({ ...data, ...payload })
+        }
+
         const current = readLocalCatalog()
-        const idx = current.findIndex((item) => String(item.id) === String(id))
+        const idx = current.findIndex((item) => String(item.id) === String(id) || String(item.id) === String(updated.id))
         if (idx > -1) {
           current[idx] = updated
-          writeLocalCatalog(current)
+        } else {
+          current.unshift(updated)
         }
-        return { success: true, data: updated }
+        writeLocalCatalog(current)
+        return { success: true, source: 'supabase', data: updated }
       } catch (err) {
-        console.warn('[FurnitureService] Gagal PATCH ke Supabase, update di LocalStorage:', err.message)
+        console.warn('[FurnitureService] Gagal PATCH ke Supabase:', err.message)
       }
     }
 
@@ -267,6 +449,7 @@ class FurnitureService {
     const idx = current.findIndex((item) => String(item.id) === String(id))
     const updatedItem = normalizeFurniture({
       ...(idx > -1 ? current[idx] : {}),
+      ...data,
       ...payload,
       id,
     })
@@ -276,22 +459,36 @@ class FurnitureService {
       current.unshift(updatedItem)
     }
     writeLocalCatalog(current)
-    return { success: true, data: updatedItem }
+    return { success: true, source: 'local', data: updatedItem }
   }
 
   /**
-   * Menghapus produk furniture (DELETE dari `public.furnitures`)
+   * DELETE: Menghapus produk dari tabel `public.furnitures` di Supabase
    */
-  async deleteFurniture(id) {
-    if (IS_SUPABASE && navigator.onLine && !String(id).startsWith('furn-')) {
+  async deleteFurniture(id, itemName = '') {
+    if (isSupabaseConfigured() && navigator.onLine) {
       try {
-        await apiClient.delete(`/rest/v1/furnitures?id=eq.${id}`)
+        if (!String(id).startsWith('furn-')) {
+          try {
+            await apiClient.delete(`/rest/v1/furnitures?id=eq.${id}`)
+          } catch {
+            await apiClient.delete(`/rest/v1/products?id=eq.${id}`)
+          }
+        } else if (itemName) {
+          await apiClient.delete(`/rest/v1/furnitures?name=eq.${encodeURIComponent(itemName)}`)
+        }
       } catch (err) {
         console.warn('[FurnitureService] Gagal DELETE di Supabase:', err.message)
       }
     }
     const current = readLocalCatalog()
-    writeLocalCatalog(current.filter((item) => String(item.id) !== String(id)))
+    writeLocalCatalog(
+      current.filter(
+        (item) =>
+          String(item.id) !== String(id) &&
+          (!itemName || item.name !== itemName),
+      ),
+    )
     return { success: true }
   }
 }
