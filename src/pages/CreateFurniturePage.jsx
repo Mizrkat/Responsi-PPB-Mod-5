@@ -275,9 +275,9 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
       </div>
 
       <div className="form-title-group">
-        <h1 className="display">Tambah Koleksi Furniture Baru (Create CRUD)</h1>
+        <h1 className="display">Tambah Koleksi Furnitur Baru</h1>
         <p className="lede">
-          Produk baru akan langsung disimpan ke tabel <code>public.furnitures</code> dan foto diunggah ke Storage Bucket <code>furnitures</code> di Supabase.
+          Lengkapi foto studio, spesifikasi ukuran, serta panduan perawatan untuk menambahkan koleksi baru ke dalam katalog Kayu & Ruang.
         </p>
       </div>
 
@@ -314,9 +314,9 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
 
       {currentStep === 'upload' && (
         <div className="card-box">
-          <h2 className="card-box-title">Unggah Foto ke Supabase Storage Bucket</h2>
+          <h2 className="card-box-title">Foto Produk Furnitur</h2>
           <p className="card-box-desc">
-            Unggah foto produk (JPG/PNG/WebP maks. 5MB) ke bucket <code>furnitures</code> atau pilih preset foto studio di bawah ini.
+            Unggah foto produk (JPG, PNG, atau WebP maks. 5MB) atau pilih salah satu preset foto studio di bawah ini.
           </p>
 
           <div className="upload-dropzone" style={{ marginBottom: 18 }}>
@@ -330,7 +330,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
             <label htmlFor="furniture-image-input" className="upload-label">
               <Upload size={36} className="upload-icon" />
               <span className="upload-main-text">Klik untuk memilih file foto dari perangkat</span>
-              <span className="upload-sub-text">Akan diunggah otomatis ke Supabase Storage Bucket (furnitures)</span>
+              <span className="upload-sub-text">Format JPG, PNG, atau WebP beresolusi jelas</span>
             </label>
 
             <div className="preset-selector">
@@ -389,7 +389,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
             <div className="thumb-info">
               <span className="thumb-title">Foto Produk Terpilih</span>
               <span className="thumb-sub">
-                {imageFile ? `File siap diunggah: ${imageFile.name}` : 'Siap disimpan ke tabel public.furnitures'}
+                {imageFile ? `File siap diunggah: ${imageFile.name}` : 'Siap ditampilkan di katalog utama'}
               </span>
             </div>
             <button
@@ -568,7 +568,7 @@ export default function CreateFurniturePage({ onBack, onSuccess }) {
               Batal
             </button>
             <button type="submit" className="btn btn--primary" disabled={creating}>
-              {creating ? 'Menyimpan ke Database…' : 'Simpan Produk ke Database'}
+              {creating ? 'Menyimpan Koleksi…' : 'Simpan ke Katalog'}
             </button>
           </div>
         </form>

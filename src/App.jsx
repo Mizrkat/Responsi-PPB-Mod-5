@@ -3,8 +3,8 @@ import Header from './components/Header.jsx'
 import Footer from './components/Footer.jsx'
 import CatalogPage from './pages/CatalogPage.jsx'
 import FavoritesPage from './pages/FavoritesPage.jsx'
+import CartPage from './pages/CartPage.jsx'
 import ProfilePage from './pages/ProfilePage.jsx'
-import ShowroomPage from './pages/ShowroomPage.jsx'
 import CreateFurniturePage from './pages/CreateFurniturePage.jsx'
 import EditFurniturePage from './pages/EditFurniturePage.jsx'
 import FurnitureDetail from './components/furniture/FurnitureDetail.jsx'
@@ -15,7 +15,10 @@ import furnitureService from './services/furnitureService.js'
 import './App.css'
 
 export default function App() {
-  const [showSplash, setShowSplash] = useState(true)
+  const [showSplash, setShowSplash] = useState(() => {
+    const params = new URLSearchParams(window.location.search)
+    return !(params.get('produk') || params.get('item'))
+  })
   const [tab, setTab] = useState('Catalog')
   const [mode, setMode] = useState('list') // 'list' | 'create' | 'edit' | 'detail'
   const [selectedFurniture, setSelectedFurniture] = useState(null)
@@ -34,12 +37,20 @@ export default function App() {
     } else if (target === 'Detail') {
       setSelectedFurniture(payload)
       setMode('detail')
+      if (payload?.id) {
+        window.history.replaceState(
+          null,
+          '',
+          `${window.location.pathname}?produk=${encodeURIComponent(payload.id)}`,
+        )
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' })
     } else {
       setTab(target)
       setMode('list')
       setSelectedFurniture(null)
       setEditingFurniture(null)
+      window.history.replaceState(null, '', window.location.pathname)
       window.scrollTo({ top: 0, behavior: 'smooth' })
     }
   }
@@ -48,6 +59,7 @@ export default function App() {
     setMode('list')
     setSelectedFurniture(null)
     setEditingFurniture(null)
+    window.history.replaceState(null, '', window.location.pathname)
   }
 
   return (
@@ -89,6 +101,7 @@ export default function App() {
             onBack={handleBackToList}
             onEdit={(f) => handleNavigate('Edit', f)}
             onDelete={(f) => setDeleteTarget(f)}
+            onNavigateCart={() => handleNavigate('Cart')}
           />
         )}
 
@@ -105,7 +118,9 @@ export default function App() {
                 onNavigateCatalog={() => setTab('Catalog')}
               />
             )}
-            {tab === 'Showroom' && <ShowroomPage />}
+            {tab === 'Cart' && (
+              <CartPage onNavigateCatalog={() => setTab('Catalog')} />
+            )}
             {tab === 'Profile' && (
               <ProfilePage onReplaySplash={() => setShowSplash(true)} />
             )}
@@ -115,8 +130,8 @@ export default function App() {
 
       <ConfirmModal
         open={Boolean(deleteTarget)}
-        title="Hapus Produk Furniture"
-        message={`Apakah Anda yakin ingin menghapus "${deleteTarget?.name}"? Tindakan ini tidak dapat dibatalkan.`}
+        title="Hapus Koleksi Furnitur"
+        message={`Apakah Anda yakin ingin menghapus "${deleteTarget?.name}" dari katalog?`}
         confirmLabel="Hapus"
         cancelLabel="Batal"
         danger
@@ -125,7 +140,7 @@ export default function App() {
           if (!deleteTarget) return
           try {
             setDeleting(true)
-            await furnitureService.deleteFurniture(deleteTarget.id)
+            await furnitureService.deleteFurniture(deleteTarget.id, deleteTarget.name)
             setDeleteTarget(null)
             handleBackToList()
             setTab('Catalog')

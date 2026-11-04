@@ -1,15 +1,17 @@
-import { Plus, Armchair } from 'lucide-react'
+import { Plus, Armchair, ShoppingBag } from 'lucide-react'
 import { useFavorites } from '../hooks/useFavorites'
+import { useCart } from '../hooks/useCart'
 
 const NAV_ITEMS = [
-  { id: 'Catalog', label: 'Katalog & CRUD' },
-  { id: 'Favorites', label: 'Favorit', hasBadge: true },
-  { id: 'Showroom', label: 'Showroom' },
-  { id: 'Profile', label: 'Profil Praktikan' },
+  { id: 'Catalog', label: 'Katalog' },
+  { id: 'Favorites', label: 'Favorit', badgeType: 'fav' },
+  { id: 'Cart', label: 'Keranjang', badgeType: 'cart' },
+  { id: 'Profile', label: 'Profil' },
 ]
 
 export default function Header({ tab, onTab, onNavigateCreate }) {
   const { favorites } = useFavorites()
+  const { totalCount: cartCount } = useCart()
   const favCount = favorites ? favorites.length : 0
 
   return (
@@ -24,26 +26,40 @@ export default function Header({ tab, onTab, onNavigateCreate }) {
         </div>
         <div>
           <span className="brand display">Kayu &amp; Ruang</span>
-          <span style={{ display: 'block', fontSize: '0.68rem', color: 'var(--steel)', letterSpacing: '0.08em' }}>
-            ARTISAN FURNITURE PWA
+          <span
+            style={{
+              display: 'block',
+              fontSize: '0.68rem',
+              color: 'var(--steel)',
+              letterSpacing: '0.08em',
+            }}
+          >
+            KOLEKSI FURNITUR NUSANTARA
           </span>
         </div>
       </div>
 
       <nav className="nav">
-        {NAV_ITEMS.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={tab === item.id ? 'nav-link active' : 'nav-link'}
-            onClick={() => onTab(item.id)}
-          >
-            {item.label}
-            {item.hasBadge && favCount > 0 && (
-              <span className="nav-badge">{favCount}</span>
-            )}
-          </button>
-        ))}
+        {NAV_ITEMS.map((item) => {
+          const badgeVal =
+            item.badgeType === 'fav'
+              ? favCount
+              : item.badgeType === 'cart'
+              ? cartCount
+              : 0
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={tab === item.id ? 'nav-link active' : 'nav-link'}
+              onClick={() => onTab(item.id)}
+            >
+              {item.id === 'Cart' && <ShoppingBag size={15} />}
+              {item.label}
+              {badgeVal > 0 && <span className="nav-badge">{badgeVal}</span>}
+            </button>
+          )
+        })}
       </nav>
 
       {onNavigateCreate && (
@@ -51,9 +67,9 @@ export default function Header({ tab, onTab, onNavigateCreate }) {
           type="button"
           className="btn btn--primary btn--sm header-cta"
           onClick={onNavigateCreate}
-          title="Tambah produk furniture baru"
+          title="Tambah koleksi furnitur baru"
         >
-          <Plus size={15} /> Tambah Produk
+          <Plus size={15} /> Tambah Koleksi
         </button>
       )}
     </header>

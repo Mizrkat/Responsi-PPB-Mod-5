@@ -143,9 +143,9 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
       </div>
 
       <div className="form-title-group">
-        <h1 className="display">Edit Data Furniture (Update CRUD)</h1>
+        <h1 className="display">Perbarui Detail Furnitur</h1>
         <p className="lede">
-          Memperbarui produk ID: <code className="mono-badge">{targetId}</code> pada tabel <code>public.furnitures</code>
+          Perbarui informasi harga, spesifikasi material, maupun foto koleksi furnitur.
         </p>
       </div>
 
@@ -166,7 +166,7 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
           <img src={formData.image_url} alt={formData.name} className="thumb-small" />
           <div className="thumb-info">
             <span className="thumb-title">Foto Produk Saat Ini</span>
-            <span className="thumb-sub">Unggah foto baru untuk menyimpan ke Supabase Storage Bucket</span>
+            <span className="thumb-sub">Klik tombol di samping untuk mengganti foto tampilan produk</span>
           </div>
           <label className="btn btn--outline btn--sm" style={{ cursor: 'pointer' }}>
             {uploading ? (
@@ -351,7 +351,7 @@ export default function EditFurniturePage({ furniture, furnitureId, onBack, onSu
             Batal
           </button>
           <button type="submit" className="btn btn--primary" disabled={updating}>
-            <Save size={16} /> {updating ? 'Menyimpan ke Database…' : 'Simpan Perubahan'}
+            <Save size={16} /> {updating ? 'Menyimpan Perubahan…' : 'Simpan Perubahan'}
           </button>
         </div>
       </form>

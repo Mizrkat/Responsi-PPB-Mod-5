@@ -1,34 +1,84 @@
 import { useState } from 'react'
-import { ArrowLeft, Star, Send, Loader, Pencil, Trash2 } from 'lucide-react'
+import {
+  ArrowLeft,
+  Star,
+  Send,
+  Loader,
+  Pencil,
+  Trash2,
+  ShoppingBag,
+  Share2,
+  Check,
+  MessageCircle,
+} from 'lucide-react'
 import FavoriteButton from '../common/FavoriteButton'
 import { useReviews, useCreateReview } from '../../hooks/useReviews'
+import { useCart } from '../../hooks/useCart'
 import { getUserProfile } from '../../services/userService'
-import { formatPrice, averageRating } from '../../utils/helpers'
+import {
+  formatPrice,
+  averageRating,
+  getProductShareUrl,
+  copyProductShareLink,
+  buildWhatsAppOrderUrl,
+} from '../../utils/helpers'
 
-export default function FurnitureDetail({ furniture, onBack, onEdit, onDelete }) {
+export default function FurnitureDetail({
+  furniture,
+  onBack,
+  onEdit,
+  onDelete,
+  onNavigateCart,
+}) {
   const imgSrc = furniture.image_url || furniture.image || '/furniture/chair.jpg'
-  const category = furniture.type || furniture.category || 'Furniture'
-  const material = furniture.caliber || 'Kayu Solid'
-  const price = furniture.price ?? furniture.cook_time ?? 0
+  const category = furniture.category || furniture.type || 'Furnitur'
+  const material = furniture.material || furniture.caliber || 'Kayu Solid'
+  const price = furniture.price ?? 0
 
   const { reviews, loading: reviewsLoading, refetch: refetchReviews } = useReviews(furniture.id)
   const { createReview, loading: submitting } = useCreateReview()
+  const { addToCart } = useCart()
 
   const [rating, setRating] = useState(5)
   const [comment, setComment] = useState('')
   const [reviewSuccess, setReviewSuccess] = useState('')
+  const [copiedLink, setCopiedLink] = useState(false)
+  const [addedMsg, setAddedMsg] = useState('')
 
   const avgRating = averageRating(reviews)
+  const shareUrl = getProductShareUrl(furniture.id || furniture.name)
+
+  const handleShare = async () => {
+    await copyProductShareLink(furniture)
+    setCopiedLink(true)
+    setTimeout(() => setCopiedLink(false), 2500)
+  }
+
+  const handleAddToCart = () => {
+    addToCart(furniture, 1)
+    setAddedMsg('Produk berhasil ditambahkan ke keranjang belanja!')
+    setTimeout(() => setAddedMsg(''), 3000)
+  }
+
+  const handleBuyNow = () => {
+    addToCart(furniture, 1)
+    if (onNavigateCart) onNavigateCart()
+  }
+
+  const handleDirectWhatsApp = () => {
+    const waUrl = buildWhatsAppOrderUrl([{ ...furniture, quantity: 1 }])
+    window.open(waUrl, '_blank', 'noopener,noreferrer')
+  }
 
   const handleSubmitReview = async (e) => {
     e.preventDefault()
     const profile = getUserProfile()
     await createReview(furniture.id, {
-      user_name: `${profile.username} (${profile.kelompok})`,
+      user_name: profile.username || 'Pelanggan Kayu & Ruang',
       rating,
       comment: comment.trim(),
     })
-    setReviewSuccess('Ulasan berhasil ditambahkan!')
+    setReviewSuccess('Terima kasih! Ulasan Anda telah ditampilkan.')
     setComment('')
     setRating(5)
     refetchReviews()
@@ -37,9 +87,34 @@ export default function FurnitureDetail({ furniture, onBack, onEdit, onDelete })
 
   return (
     <div className="detail">
-      <button type="button" className="detail-back" onClick={onBack}>
-        <ArrowLeft size={18} /> Kembali ke Katalog
-      </button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <button type="button" className="detail-back" onClick={onBack}>
+          <ArrowLeft size={18} /> Kembali ke Katalog
+        </button>
+
+        <button
+          type="button"
+          className="btn btn--outline btn--sm"
+          onClick={handleShare}
+          title="Salin link produk untuk dibagikan"
+        >
+          {copiedLink ? (
+            <>
+              <Check size={15} color="#1e8449" /> Link Disalin!
+            </>
+          ) : (
+            <>
+              <Share2 size={15} /> Bagikan Produk
+            </>
+          )}
+        </button>
+      </div>
+
+      {addedMsg && (
+        <div className="toast toast--success">
+          <Check size={18} /> {addedMsg}
+        </div>
+      )}
 
       <div className="detail-hero">
         <img className="detail-img" src={imgSrc} alt={furniture.name} />
@@ -58,30 +133,62 @@ export default function FurnitureDetail({ furniture, onBack, onEdit, onDelete })
             </p>
           )}
 
+          {/* Primary Purchase Actions */}
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
+            <button type="button" className="btn btn--primary" onClick={handleAddToCart}>
+              <ShoppingBag size={16} /> + Tambah ke Keranjang
+            </button>
+            <button type="button" className="btn btn--outline" onClick={handleBuyNow}>
+              Beli &amp; Checkout
+            </button>
+            <button
+              type="button"
+              className="btn btn--outline"
+              style={{ borderColor: '#1e8449', color: '#1e8449' }}
+              onClick={handleDirectWhatsApp}
+            >
+              <MessageCircle size={16} /> Pesan via WhatsApp
+            </button>
+          </div>
+
+          {/* Secondary Management Actions */}
           <div className="detail-actions">
             <FavoriteButton furnitureId={furniture.id || furniture.name} />
             {onEdit && (
-              <button type="button" className="btn btn--outline" onClick={() => onEdit(furniture)}>
-                <Pencil size={15} /> Edit Produk
+              <button type="button" className="btn btn--outline btn--sm" onClick={() => onEdit(furniture)}>
+                <Pencil size={14} /> Ubah Produk
               </button>
             )}
             {onDelete && (
-              <button type="button" className="btn btn--danger" onClick={() => onDelete(furniture)}>
-                <Trash2 size={15} /> Hapus
+              <button type="button" className="btn btn--danger btn--sm" onClick={() => onDelete(furniture)}>
+                <Trash2 size={14} /> Hapus
               </button>
             )}
+          </div>
+
+          {/* Authentic Shareable Link Box */}
+          <div style={{ marginTop: 14, padding: '10px 12px', background: 'var(--paper)', borderRadius: 8, border: '1px solid var(--line)', fontSize: '0.78rem' }}>
+            <span style={{ display: 'block', fontWeight: 700, color: 'var(--steel)', marginBottom: 4 }}>
+              LINK AUTENTIK PRODUK:
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <code style={{ wordBreak: 'break-all', color: 'var(--ink)' }}>{shareUrl}</code>
+              <button type="button" className="link-btn" onClick={handleShare} style={{ flexShrink: 0 }}>
+                {copiedLink ? 'Tersalin!' : 'Salin Link'}
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
       <section className="detail-section">
-        <h2>Deskripsi Produk</h2>
+        <h2>Deskripsi Koleksi</h2>
         <p style={{ lineHeight: 1.6 }}>{furniture.description || 'Tidak ada deskripsi.'}</p>
       </section>
 
       {furniture.ingredients && furniture.ingredients.length > 0 && (
         <section className="detail-section">
-          <h2>Spesifikasi &amp; Material</h2>
+          <h2>Spesifikasi Dimensi &amp; Material</h2>
           <ul className="detail-specs">
             {furniture.ingredients.map((ing, i) => (
               <li key={ing.id || i}>
@@ -125,7 +232,7 @@ export default function FurnitureDetail({ furniture, onBack, onEdit, onDelete })
           <textarea
             className="review-input"
             rows="3"
-            placeholder="Tulis ulasan mengenai kualitas kayu, kenyamanan, atau estetika produk ini…"
+            placeholder="Bagikan kesan Anda mengenai kualitas material dan kenyamanan furnitur ini…"
             value={comment}
             onChange={(e) => setComment(e.target.value)}
             required

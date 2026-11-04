@@ -1,20 +1,21 @@
 import { useState, useEffect } from 'react'
 import {
   User,
-  Copy,
   Check,
   Save,
   Heart,
   Camera,
   Play,
   Package,
-  Database,
-  RefreshCw,
+  ShoppingBag,
+  Pencil,
+  X,
   Loader,
 } from 'lucide-react'
 import userService from '../services/userService'
 import { useFavorites } from '../hooks/useFavorites'
 import { useFurnitures } from '../hooks/useFurnitures'
+import { useCart } from '../hooks/useCart'
 
 export default function ProfilePage({ onReplaySplash }) {
   const [profile, setProfile] = useState(() => userService.getUserProfile())
@@ -25,21 +26,20 @@ export default function ProfilePage({ onReplaySplash }) {
   const [bio, setBio] = useState(profile.bio || '')
   const [avatar, setAvatar] = useState(profile.avatar_url || profile.avatar || null)
 
-  const [loadingProfile, setLoadingProfile] = useState(true)
+  // Form edit disembunyikan secara default; hanya tampil saat tombol "Edit Profil" diklik
+  const [isEditing, setIsEditing] = useState(false)
   const [savingProfile, setSavingProfile] = useState(false)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
-  const [dataSource, setDataSource] = useState('local')
-  const [copied, setCopied] = useState(false)
   const [feedback, setFeedback] = useState('')
 
   const { favorites } = useFavorites()
   const { furnitures } = useFurnitures({ limit: 100 })
+  const { totalCount: cartCount } = useCart()
 
-  const loadProfileFromDb = async () => {
-    try {
-      setLoadingProfile(true)
-      const res = await userService.fetchProfileFromSupabase()
-      if (res.success && res.data) {
+  useEffect(() => {
+    let mounted = true
+    userService.fetchProfileFromSupabase().then((res) => {
+      if (mounted && res.success && res.data) {
         setProfile(res.data)
         setUsername(res.data.username || '')
         setNim(res.data.nim || '')
@@ -47,23 +47,29 @@ export default function ProfilePage({ onReplaySplash }) {
         setProdi(res.data.prodi || '')
         setBio(res.data.bio || '')
         setAvatar(res.data.avatar_url || res.data.avatar || null)
-        setDataSource(res.source || 'local')
       }
-    } finally {
-      setLoadingProfile(false)
+    })
+    return () => {
+      mounted = false
     }
-  }
-
-  useEffect(() => {
-    loadProfileFromDb()
   }, [])
 
-  const handleCopyId = () => {
-    if (profile.userId) {
-      navigator.clipboard?.writeText(profile.userId)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }
+  const handleOpenEdit = () => {
+    setUsername(profile.username || '')
+    setNim(profile.nim || '')
+    setKelompok(profile.kelompok || '')
+    setProdi(profile.prodi || '')
+    setBio(profile.bio || '')
+    setIsEditing(true)
+  }
+
+  const handleCancelEdit = () => {
+    setUsername(profile.username || '')
+    setNim(profile.nim || '')
+    setKelompok(profile.kelompok || '')
+    setProdi(profile.prodi || '')
+    setBio(profile.bio || '')
+    setIsEditing(false)
   }
 
   const handleAvatarChange = async (e) => {
@@ -75,15 +81,11 @@ export default function ProfilePage({ onReplaySplash }) {
       if (res.success) {
         setAvatar(res.avatarUrl)
         setProfile(res.profile)
-        setFeedback(
-          res.source === 'supabase_storage'
-            ? 'Foto profil berhasil diunggah ke Supabase Storage Bucket & disimpan di tabel public.profiles!'
-            : 'Foto profil berhasil diperbarui (tersimpan secara lokal).',
-        )
-        setTimeout(() => setFeedback(''), 4000)
+        setFeedback('Foto profil berhasil diperbarui.')
+        setTimeout(() => setFeedback(''), 3500)
       }
     } catch (err) {
-      setFeedback(err.message || 'Gagal mengunggah foto profil.')
+      setFeedback(err.message || 'Gagal memperbarui foto profil.')
     } finally {
       setUploadingAvatar(false)
     }
@@ -105,13 +107,9 @@ export default function ProfilePage({ onReplaySplash }) {
       const result = await userService.saveProfileToSupabase(updated)
       if (result.success) {
         setProfile(result.data)
-        setDataSource(result.source || 'local')
-        setFeedback(
-          result.source === 'supabase'
-            ? 'Data profil akun berhasil disimpan ke tabel Supabase public.profiles!'
-            : 'Data profil akun disimpan ke penyimpanan lokal (LocalStorage).',
-        )
-        setTimeout(() => setFeedback(''), 4000)
+        setIsEditing(false)
+        setFeedback('Profil berhasil diperbarui!')
+        setTimeout(() => setFeedback(''), 3500)
       }
     } finally {
       setSavingProfile(false)
@@ -131,27 +129,28 @@ export default function ProfilePage({ onReplaySplash }) {
         }}
       >
         <div>
-          <h1 className="display">Profil Akun Praktikan</h1>
+          <h1 className="display">Profil Pengguna</h1>
           <p className="lede">
-            Terhubung ke tabel <code>public.profiles</code> dan Storage Bucket <code>avatars</code> / <code>furnitures</code> di Supabase.
+            Informasi identitas anggota, koleksi favorit, dan ringkasan aktivitas belanja Anda di Kayu &amp; Ruang.
           </p>
         </div>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            className="btn btn--outline btn--sm"
-            onClick={loadProfileFromDb}
-            disabled={loadingProfile}
-          >
-            <RefreshCw size={14} className={loadingProfile ? 'spin' : ''} /> Muat dari Supabase
-          </button>
+          {!isEditing && (
+            <button
+              type="button"
+              className="btn btn--primary btn--sm"
+              onClick={handleOpenEdit}
+            >
+              <Pencil size={14} /> Edit Profil
+            </button>
+          )}
           {onReplaySplash && (
             <button
               type="button"
               className="btn btn--outline btn--sm"
               onClick={onReplaySplash}
             >
-              <Play size={14} /> Putar Splash Screen
+              <Play size={14} /> Putar Intro
             </button>
           )}
         </div>
@@ -163,160 +162,180 @@ export default function ProfilePage({ onReplaySplash }) {
         </div>
       )}
 
+      {/* Kartu Profil Utama */}
       <div className="profile-card">
-        <div className="profile-card-top">
-          <div className="avatar-wrap">
-            {avatar ? (
-              <img src={avatar} alt={profile.username} className="avatar-img" />
-            ) : (
-              <div className="avatar-placeholder">
-                <User size={36} stroke="var(--brass)" />
-              </div>
-            )}
-            <label
-              htmlFor="avatar-file-input"
-              className="avatar-upload-btn"
-              title="Unggah Foto ke Supabase Storage Bucket"
-            >
-              {uploadingAvatar ? <Loader size={14} className="spin" /> : <Camera size={14} />}
-              <input
-                id="avatar-file-input"
-                type="file"
-                accept="image/*"
-                onChange={handleAvatarChange}
-                className="hidden-file-input"
-                disabled={uploadingAvatar}
-              />
-            </label>
-          </div>
-
-          <div className="profile-identity">
-            <h2 className="display">{profile.username}</h2>
-            <p style={{ margin: '0 0 6px', fontWeight: 600, color: 'var(--brass)' }}>
-              NIM: {profile.nim} · {profile.kelompok}
-            </p>
-            <p style={{ margin: '0 0 8px', fontSize: '0.88rem', color: 'var(--steel)' }}>
-              {profile.prodi}
-            </p>
-            <div className="profile-id-row" style={{ flexWrap: 'wrap' }}>
-              <span className="mono-badge">user_id: {profile.userId}</span>
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={handleCopyId}
-                title="Salin UUID"
+        <div
+          className="profile-card-top"
+          style={{ justifyContent: 'space-between' }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
+            <div className="avatar-wrap">
+              {avatar ? (
+                <img src={avatar} alt={profile.username} className="avatar-img" />
+              ) : (
+                <div className="avatar-placeholder">
+                  <User size={36} stroke="var(--brass)" />
+                </div>
+              )}
+              <label
+                htmlFor="avatar-file-input"
+                className="avatar-upload-btn"
+                title="Ganti Foto Profil"
               >
-                {copied ? <Check size={14} color="var(--brass)" /> : <Copy size={14} />}
-              </button>
-              <span className="mono-badge" style={{ color: dataSource === 'supabase' ? '#1e8449' : 'var(--steel)' }}>
-                Sumber: {dataSource === 'supabase' ? 'Supabase (public.profiles)' : 'LocalStorage Cache'}
-              </span>
+                {uploadingAvatar ? <Loader size={14} className="spin" /> : <Camera size={14} />}
+                <input
+                  id="avatar-file-input"
+                  type="file"
+                  accept="image/*"
+                  onChange={handleAvatarChange}
+                  className="hidden-file-input"
+                  disabled={uploadingAvatar}
+                />
+              </label>
+            </div>
+
+            <div className="profile-identity">
+              <h2 className="display">{profile.username}</h2>
+              <p style={{ margin: '0 0 4px', fontWeight: 600, color: 'var(--brass)' }}>
+                NIM: {profile.nim} · {profile.kelompok}
+              </p>
+              <p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: 'var(--steel)' }}>
+                {profile.prodi}
+              </p>
+              {profile.bio && (
+                <p style={{ margin: 0, fontSize: '0.88rem', color: 'var(--ink)', maxWidth: '58ch' }}>
+                  {profile.bio}
+                </p>
+              )}
             </div>
           </div>
+
+          {!isEditing && (
+            <button
+              type="button"
+              className="btn btn--outline btn--sm"
+              onClick={handleOpenEdit}
+              style={{ alignSelf: 'flex-start' }}
+            >
+              <Pencil size={14} /> Edit Profil
+            </button>
+          )}
         </div>
 
         <div className="profile-stats" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
           <div className="stat-item">
             <Package size={20} stroke="var(--brass)" />
             <div className="stat-val">{furnitures.length}</div>
-            <div className="stat-label">Tabel public.furnitures</div>
+            <div className="stat-label">Koleksi Katalog</div>
           </div>
           <div className="stat-item">
             <Heart size={20} stroke="var(--brass)" />
             <div className="stat-val">{favorites.length}</div>
-            <div className="stat-label">Tabel public.favorites</div>
+            <div className="stat-label">Furnitur Favorit</div>
           </div>
           <div className="stat-item">
-            <Database size={20} stroke="var(--brass)" />
-            <div className="stat-val">Aktif</div>
-            <div className="stat-label">Tabel public.profiles</div>
+            <ShoppingBag size={20} stroke="var(--brass)" />
+            <div className="stat-val">{cartCount}</div>
+            <div className="stat-label">Isi Keranjang</div>
           </div>
         </div>
       </div>
 
-      <form onSubmit={handleSaveProfile} className="profile-form">
-        <h3 className="section-title">
-          Edit Data Tabel <code>public.profiles</code> (Nama, NIM, Kelompok)
-        </h3>
+      {/* Form Edit Profil — Hanya tampil apabila tombol "Edit Profil" diklik */}
+      {isEditing && (
+        <form onSubmit={handleSaveProfile} className="profile-form">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 className="section-title">Edit Informasi Profil</h3>
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={handleCancelEdit}
+              title="Tutup form edit"
+            >
+              <X size={16} />
+            </button>
+          </div>
 
-        <div className="form-grid">
+          <div className="form-grid">
+            <div className="form-group">
+              <label className="form-label">Nama Lengkap *</label>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Masukkan Nama Lengkap Anda"
+                className="form-input"
+                required
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">NIM (Nomor Induk Mahasiswa) *</label>
+              <input
+                type="text"
+                value={nim}
+                onChange={(e) => setNim(e.target.value)}
+                placeholder="Contoh: 21120123140001"
+                className="form-input"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="form-grid">
+            <div className="form-group">
+              <label className="form-label">Kelompok *</label>
+              <input
+                type="text"
+                value={kelompok}
+                onChange={(e) => setKelompok(e.target.value)}
+                placeholder="Contoh: Kelompok 05"
+                className="form-input"
+                required
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Program Studi / Universitas</label>
+              <input
+                type="text"
+                value={prodi}
+                onChange={(e) => setProdi(e.target.value)}
+                placeholder="Teknik Komputer - Universitas Diponegoro"
+                className="form-input"
+              />
+            </div>
+          </div>
+
           <div className="form-group">
-            <label className="form-label">Nama Lengkap (username) *</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="Masukkan Nama Lengkap Anda"
-              className="form-input"
-              required
+            <label className="form-label">Tentang Saya / Catatan</label>
+            <textarea
+              value={bio}
+              onChange={(e) => setBio(e.target.value)}
+              rows={3}
+              className="form-textarea"
             />
           </div>
 
-          <div className="form-group">
-            <label className="form-label">NIM (Nomor Induk Mahasiswa) *</label>
-            <input
-              type="text"
-              value={nim}
-              onChange={(e) => setNim(e.target.value)}
-              placeholder="Contoh: 21120123140001"
-              className="form-input"
-              required
-            />
+          <div className="form-actions-bar">
+            <button
+              type="button"
+              className="btn btn--outline"
+              onClick={handleCancelEdit}
+              disabled={savingProfile}
+            >
+              Batal
+            </button>
+            <button
+              type="submit"
+              className="btn btn--primary"
+              disabled={savingProfile}
+            >
+              <Save size={16} /> {savingProfile ? 'Menyimpan…' : 'Simpan Perubahan'}
+            </button>
           </div>
-        </div>
-
-        <div className="form-grid">
-          <div className="form-group">
-            <label className="form-label">Kelompok Praktikum *</label>
-            <input
-              type="text"
-              value={kelompok}
-              onChange={(e) => setKelompok(e.target.value)}
-              placeholder="Contoh: Kelompok 05"
-              className="form-input"
-              required
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Program Studi / Universitas</label>
-            <input
-              type="text"
-              value={prodi}
-              onChange={(e) => setProdi(e.target.value)}
-              placeholder="Teknik Komputer - Universitas Diponegoro"
-              className="form-input"
-            />
-          </div>
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Bio / Deskripsi Proyek</label>
-          <textarea
-            value={bio}
-            onChange={(e) => setBio(e.target.value)}
-            rows={3}
-            className="form-textarea"
-          />
-        </div>
-
-        {avatar && String(avatar).startsWith('http') && (
-          <div className="form-group">
-            <label className="form-label">URL Avatar di Supabase Storage Bucket</label>
-            <input type="text" value={avatar} readOnly className="form-input" />
-          </div>
-        )}
-
-        <button
-          type="submit"
-          className="btn btn--primary"
-          style={{ alignSelf: 'flex-start' }}
-          disabled={savingProfile}
-        >
-          <Save size={16} />{' '}
-          {savingProfile ? 'Menyimpan ke Supabase…' : 'Simpan ke Tabel public.profiles'}
-        </button>
-      </form>
+        </form>
+      )}
     </div>
   )
 }
